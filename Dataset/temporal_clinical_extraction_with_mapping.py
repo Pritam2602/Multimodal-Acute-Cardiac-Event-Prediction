@@ -182,7 +182,7 @@ print("\nMerging all features...")
 temporal_features = pd.merge(
     vital_features,
     lab_features,
-    on=["subject_id", "hadm_id"],
+    on=["subject_id", "hadm_id", "study_id"],
     how="outer"
 )
 
