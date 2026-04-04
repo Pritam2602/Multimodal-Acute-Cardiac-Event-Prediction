@@ -17,7 +17,7 @@ RECORD_LIST_PATH = "D:\MINI_PROJECT\mimic_data\record_list.csv.gz"
 D_ITEMS_PATH = "D:\MINI_PROJECT\mimic_data\d_items.csv"
 D_LABITEMS_PATH = "D:\MINI_PROJECT\mimic_data\d_labitems.csv"
 
-OUTPUT_PATH = "D:\MINI_PROJECT\mimic_data\temporal_clinical_features.csv"
+OUTPUT_PATH = "D:\MINI_PROJECT\mimic_data\temporal_clinical_features.parquet"
 
 # ==========================================
 # LOAD DATA
@@ -194,6 +194,6 @@ print("Final temporal dataset shape:", temporal_features.shape)
 
 print("\nSaving dataset...")
 
-temporal_features.to_csv(OUTPUT_PATH, index=False)
+temporal_features.to_parquet(OUTPUT_PATH, index=False)
 
 print("Saved successfully at:", OUTPUT_PATH)
