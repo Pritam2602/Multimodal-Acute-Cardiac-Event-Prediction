@@ -137,38 +137,30 @@ def extract_temporal_features(events_df, itemids_dict):
         if subset.empty:
             continue
 
-        grouped = subset.groupby(["subject_id", "hadm_id"])
+        # Sort by time to get LAST value
+        subset = subset.sort_values("charttime")
 
-        agg = grouped["valuenum"].agg(
-            mean="mean",
-            max="max",
-            min="min",
-            last=lambda x: x.iloc[-1]
-        ).reset_index()
+        last_vals = subset.groupby(
+            ["subject_id","hadm_id","study_id"]
+        ).tail(1)
 
-        # Rename columns
-        agg = agg.rename(columns={
-            "mean": f"{name}_mean",
-            "max": f"{name}_max",
-            "min": f"{name}_min",
-            "last": f"{name}_last"
-        })
+        last_vals = last_vals[[
+            "subject_id","hadm_id","study_id","valuenum"
+        ]].rename(columns={"valuenum": name})
 
-        features.append(agg)
+        features.append(last_vals)
 
     if not features:
         return pd.DataFrame()
 
-    final = reduce(
-        lambda left, right: pd.merge(
-            left, right,
-            on=["subject_id", "hadm_id"],
+    return reduce(
+        lambda l, r: pd.merge(
+            l, r,
+            on=["subject_id","hadm_id","study_id"],
             how="outer"
         ),
         features
     )
-
-    return final
 
 
 # ==========================================
