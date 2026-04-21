@@ -1,100 +1,243 @@
-# Walkthrough: Test Data Storage + Model Comparison
+# Walkthrough: Training, Comparison, and Serving
 
-## What Was Built
+This file explains how the current AMI prediction pipeline works end to end: training, model comparison, prediction storage, explainability, and API serving.
 
-A shared pipeline that **compares all trained models**, **picks the best one**, generates **prediction reasoning**, and stores everything in a **SQLite database** for the frontend.
+For the architecture details, use [architecture_summary.md](/d:/MINI_PROJECT/architecture_summary.md:1) as the main reference.
 
-## Project Structure
+## What the project does
 
+The project predicts **Acute Myocardial Infarction (AMI)** from:
+
+- raw 12-lead ECG waveforms
+- structured clinical EHR features
+
+The repository is set up to support a fair comparison between:
+
+- a **current early-fusion model**
+- a **planned late-fusion model**
+
+After training, the system can evaluate all available models on the same test set, choose the best one, generate reasoning, and serve the results through a shared API.
+
+---
+
+## Current model status
+
+### Early fusion
+
+Implemented in [early_fusion/model.py](/d:/MINI_PROJECT/early_fusion/model.py:1).
+
+The current early-fusion model works like this:
+
+1. clinical features are projected into a small number of channels
+2. those channels are repeated across the ECG timeline
+3. they are concatenated with the raw ECG input
+4. the fused input is passed through shared `Conv1D` layers
+5. a shared `BiLSTM` models temporal dependencies
+6. a classifier produces the AMI logit
+
+So the model is genuinely early fusion, because the modalities are merged before the shared temporal modeling is complete.
+
+### Late fusion
+
+Not implemented yet as a separate module.
+
+The intended late-fusion design is:
+
+1. ECG branch processes only ECG using `Conv1D + BiLSTM`
+2. clinical branch processes only tabular features using an MLP
+3. each branch produces its own logit
+4. a small fusion head combines the branch outputs at the end
+
+That gives a clean research comparison where the main difference is the **fusion stage**.
+
+---
+
+## Repository flow
+
+```text
+Train model(s)
+    -> Save best weights and metrics
+    -> Run store_predictions.py
+    -> Evaluate all registered models on the same held-out test set
+    -> Pick the best model by metric
+    -> Generate explainability outputs
+    -> Store predictions and reasoning in SQLite
+    -> Serve through api.py
 ```
+
+---
+
+## Project structure
+
+```text
 D:\MINI_PROJECT\
-├── api.py                 ← Shared FastAPI server (all models)
-├── explain.py             ← Shared explainability (gradient × input)
-├── store_predictions.py   ← Compare models → pick best → store to DB
-├── early_fusion/
-│   ├── config.py          ← Modified (TEST_SPLIT, DB_PATH, NORMAL_RANGES)
-│   ├── dataset.py         ← Modified (two-stage split, returns test_metadata)
-│   ├── train.py           ← Modified (unpacks test_metadata)
-│   ├── model.py
-│   ├── engine.py
-│   ├── plots.py
-│   └── artifacts/
-│       ├── models/        ← early_fusion_model.pth
-│       ├── predictions.db ← SQLite database
-│       └── ...
-├── late_fusion/           ← (future — just add to MODEL_REGISTRY)
-└── requirements.txt       ← Added fastapi, uvicorn
+|-- architecture_summary.md
+|-- walkthrough.md
+|-- api.py
+|-- explain.py
+|-- store_predictions.py
+|-- early_fusion/
+|   |-- config.py
+|   |-- dataset.py
+|   |-- model.py
+|   |-- losses.py
+|   |-- engine.py
+|   |-- train.py
+|   |-- plots.py
+|   `-- artifacts/
+|       |-- models/
+|       |-- metrics/
+|       `-- plots/
+`-- late_fusion/   # planned
 ```
 
-## Pipeline Flow
+---
 
-```mermaid
-graph TD
-    A["Train Models<br/>python -m early_fusion.train<br/>python -m late_fusion.train"] --> B["python store_predictions.py"]
-    B --> C["Load ALL trained models"]
-    C --> D["Evaluate each on same test set"]
-    D --> E{"Compare F1 scores"}
-    E --> F["★ Pick BEST model"]
-    F --> G["Run Gradient × Input Attribution"]
-    G --> H["Generate Reasoning"]
-    H --> I["Store to SQLite DB"]
-    I --> J["python api.py"]
-    J --> K["Frontend Dashboard"]
-```
+## Training pipeline
 
-## How to Use
+### Early-fusion training
+
+Run:
 
 ```bash
-# After training finishes:
+python -m early_fusion.train
+```
 
-# 1. Store predictions (compares models, picks best)
-python store_predictions.py
-python store_predictions.py --subset 500   # quick test
+The current training pipeline includes:
 
-# 2. Start API
+- focal loss for class imbalance
+- tuned learning rate
+- dropout
+- validation threshold search
+- checkpoint saving
+- best-threshold persistence in `metrics.json`
+
+### Important note
+
+Because the early-fusion architecture was changed recently, old saved weights may not match the current model definition. Fresh training is the right move for the current version.
+
+---
+
+## Evaluation and model comparison
+
+The comparison pipeline is handled by [store_predictions.py](/d:/MINI_PROJECT/store_predictions.py:1).
+
+### What it does
+
+1. loads the held-out test set
+2. loads every registered trained model
+3. evaluates each model on the same test patients
+4. applies that model's saved threshold if available
+5. compares metrics
+6. picks the best model
+7. stores predictions and reasoning in SQLite
+
+### Current behavior
+
+Right now the registry is set up for `early_fusion`.
+
+Once `late_fusion` is implemented and trained, it can be added to the registry and compared automatically through the same script.
+
+---
+
+## Explainability pipeline
+
+Explainability is handled by [explain.py](/d:/MINI_PROJECT/explain.py:1).
+
+The pipeline computes feature attributions and generates readable reasoning text so the dashboard can show:
+
+- predicted AMI risk
+- top contributing clinical factors
+- ranked explanation entries for each patient
+
+This logic is shared and intended to stay model-agnostic as much as possible.
+
+---
+
+## Database and API
+
+Predictions are stored in a shared SQLite database under the early-fusion artifacts area.
+
+The API in [api.py](/d:/MINI_PROJECT/api.py:1) reads from that database and exposes endpoints for:
+
+- patient list
+- patient detail
+- ECG waveform
+- explainability insights
+- model metrics
+- comparison results
+
+Start the API with:
+
+```bash
 python api.py
-# → http://localhost:5000/docs (Swagger UI)
 ```
 
-## API Endpoints
+Swagger UI:
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/patients` | Patient list (paginated, filterable) |
-| `GET /api/patients/{id}` | Full clinical data + prediction |
-| `GET /api/patients/{id}/ecg` | 12-lead ECG waveform (loaded on-demand) |
-| `GET /api/patients/{id}/insights` | Model reasoning with ranked explanations |
-| `GET /api/metrics` | Aggregate model performance |
-| `GET /api/stats` | Dashboard summary statistics |
-| `GET /api/comparison` | Model comparison table |
-
-## Adding Late Fusion (Future)
-
-Just uncomment 8 lines in [store_predictions.py](file:///d:/MINI_PROJECT/store_predictions.py#L75-L86):
-
-```python
-MODEL_REGISTRY = {
-    "early_fusion": { ... },
-    "late_fusion": {                              # ← Uncomment
-        "module":      "late_fusion.model",
-        "class":       "LateFusionModel",
-        "weights":     "late_fusion/artifacts/models/late_fusion_model.pth",
-        "config": { ... },
-        "dataset_module": "late_fusion.dataset",
-    },
-}
+```text
+http://localhost:5000/docs
 ```
 
-Then re-run `python store_predictions.py` — it will compare both and pick the winner.
+---
 
-## Files Changed
+## Typical workflow
 
-| File | Change | Lines |
-|------|--------|-------|
-| [config.py](file:///d:/MINI_PROJECT/early_fusion/config.py) | Added TEST_SPLIT, DB_PATH, NORMAL_RANGES, ECG_LEAD_NAMES | +28 |
-| [dataset.py](file:///d:/MINI_PROJECT/early_fusion/dataset.py) | Two-stage split, data leakage prevention | ~40 changed |
-| [train.py](file:///d:/MINI_PROJECT/early_fusion/train.py) | Unpack test_metadata | 1 line |
-| [explain.py](file:///d:/MINI_PROJECT/explain.py) | NEW — shared explainability | 185 lines |
-| [store_predictions.py](file:///d:/MINI_PROJECT/store_predictions.py) | NEW — compare + store | 310 lines |
-| [api.py](file:///d:/MINI_PROJECT/api.py) | NEW — shared FastAPI | 310 lines |
-| [requirements.txt](file:///d:/MINI_PROJECT/requirements.txt) | Added fastapi, uvicorn | +3 |
+### Train the current early-fusion model
+
+```bash
+python -m early_fusion.train
+```
+
+### Store predictions and build the database
+
+```bash
+python store_predictions.py
+```
+
+Quick subset run:
+
+```bash
+python store_predictions.py --subset 500
+```
+
+### Start the API
+
+```bash
+python api.py
+```
+
+---
+
+## Planned late-fusion workflow
+
+After `late_fusion/` is created:
+
+```bash
+python -m late_fusion.train
+python store_predictions.py
+python api.py
+```
+
+At that point, `store_predictions.py` should compare both fusion strategies on the same test set and pick the stronger one automatically.
+
+---
+
+## How this fits the research project
+
+The repo is now organized around a defensible comparison:
+
+- **Early fusion** asks whether joint multimodal temporal learning helps when clinical context is injected before shared CNN and BiLSTM processing finishes.
+- **Late fusion** asks whether independent modality reasoning followed by final decision fusion works better.
+
+Using `BiLSTM` in both models keeps the comparison fairer, because the main experimental variable becomes the fusion strategy instead of one model simply having a stronger ECG sequence encoder.
+
+---
+
+## Where to read next
+
+- Architecture details: [architecture_summary.md](/d:/MINI_PROJECT/architecture_summary.md:1)
+- Early-fusion model: [early_fusion/model.py](/d:/MINI_PROJECT/early_fusion/model.py:1)
+- Training loop: [early_fusion/train.py](/d:/MINI_PROJECT/early_fusion/train.py:1)
+- Model comparison and DB storage: [store_predictions.py](/d:/MINI_PROJECT/store_predictions.py:1)
+- API: [api.py](/d:/MINI_PROJECT/api.py:1)
