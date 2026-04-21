@@ -24,3 +24,12 @@ build/
 venv/
 __pycache__/
 !requirements.txt
+# Ignore entire ECG cache folder
+mimic_data/ecg_cache/
+
+# Ignore all ECG waveform files
+*.dat
+*.hea
+
+# If you store as numpy
+*.npy

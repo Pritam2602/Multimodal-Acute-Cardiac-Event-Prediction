@@ -25,3 +25,7 @@ seaborn==0.13.2
 
 # Utilities
 tqdm==4.66.4
+
+# Web API
+fastapi==0.111.0
+uvicorn==0.29.0
