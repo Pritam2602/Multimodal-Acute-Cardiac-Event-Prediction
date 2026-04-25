@@ -60,23 +60,24 @@ ECG_LENGTH   = 5000  # samples per lead
 
 # ── Training hyper-parameters ─────────────────────────────────────────────────
 BATCH_SIZE    = 64
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 1e-3
+WEIGHT_DECAY  = 1e-4
 NUM_EPOCHS    = 25
 VAL_SPLIT     = 0.2
 TEST_SPLIT    = 0.15   # held-out test set for frontend / evaluation
-DROPOUT_RATE  = 0.4
+DROPOUT_RATE  = 0.3
 DEFAULT_THRESHOLD = 0.35
 THRESHOLD_SEARCH_MIN = 0.10
 THRESHOLD_SEARCH_MAX = 0.90
 THRESHOLD_SEARCH_STEPS = 50
 FOCAL_LOSS_ALPHA = 1.0
 FOCAL_LOSS_GAMMA = 2.0
-# Windows DataLoader workers use shared file mappings for batch collation.
-# Large ECG tensors can exhaust paging file / shared-memory limits there, so
-# keep train loading modest and validation even lighter by default.
-NUM_WORKERS   = 2 if os.name == "nt" else 12
-VAL_NUM_WORKERS = 0 if os.name == "nt" else 4
-PREFETCH_FACTOR = 1 if os.name == "nt" else 2
+# With memmap-backed loading, each worker just reads a single (12, 5000)
+# slice from the memory-mapped file. This is much lighter than the old wfdb
+# loading and doesn't exhaust shared-memory limits on Windows.
+NUM_WORKERS   = 4 if os.name == "nt" else 12
+VAL_NUM_WORKERS = 2 if os.name == "nt" else 4
+PREFETCH_FACTOR = 2 if os.name == "nt" else 2
 
 # ── Reproducibility ──────────────────────────────────────────────────────────
 SEED = 42

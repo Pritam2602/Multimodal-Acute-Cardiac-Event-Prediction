@@ -184,45 +184,163 @@ def load_ecg_signal(record_path: str, target_length: int = ECG_LENGTH) -> np.nda
 
 
 # ==========================================
-# LAZY-LOADING PYTORCH DATASET
+# ECG DATA AUGMENTATION
+# ==========================================
+
+def _augment_ecg(ecg: np.ndarray) -> np.ndarray:
+    """
+    Apply random augmentations to a z-scored ECG signal during training.
+
+    Augmentations:
+      1. Random amplitude scaling (±10%)
+      2. Additive Gaussian noise (small)
+      3. Random temporal shift (up to ±100 samples)
+
+    Parameters
+    ----------
+    ecg : np.ndarray of shape (12, target_length) — already z-scored
+
+    Returns
+    -------
+    ecg : np.ndarray of same shape, augmented
+    """
+    # 1. Random amplitude scaling
+    scale = np.random.uniform(0.9, 1.1)
+    ecg = ecg * scale
+
+    # 2. Additive Gaussian noise
+    noise = np.random.normal(0, 0.02, ecg.shape).astype(np.float32)
+    ecg = ecg + noise
+
+    # 3. Random temporal shift (wrap-around)
+    shift = np.random.randint(-100, 101)
+    if shift != 0:
+        ecg = np.roll(ecg, shift, axis=1)
+
+    return ecg
+
+
+# ==========================================
+# MEMORY-MAPPED ECG CACHE
+# ==========================================
+# Instead of reading 125K wfdb files per epoch (~20 min), we pre-process
+# all ECGs once into a single memory-mapped file. Each subsequent epoch
+# reads pre-z-scored signals via memmap (microseconds per sample).
+# ==========================================
+
+def _ecg_memmap_path(n_records: int) -> Path:
+    """Return path to the memmap file for a given dataset size."""
+    return ECG_CACHE_DIR / f"ecg_memmap_{n_records}.dat"
+
+
+def _build_ecg_memmap(local_paths: list) -> tuple:
+    """
+    Build (or load) a memory-mapped numpy array of all z-scored ECG signals.
+
+    First run  : loads each ECG via wfdb, z-scores, writes to memmap (one-time).
+    Later runs : just opens the existing memmap (instant).
+
+    Returns
+    -------
+    memmap_path : Path  — stored so datasets can reopen lazily per-worker
+    shape       : tuple — (n_records, ECG_LEADS, ECG_LENGTH)
+    """
+    n = len(local_paths)
+    shape = (n, ECG_LEADS, ECG_LENGTH)
+    memmap_path = _ecg_memmap_path(n)
+
+    if memmap_path.exists():
+        # Validate the file size matches expected shape
+        expected_bytes = n * ECG_LEADS * ECG_LENGTH * 4  # float32
+        actual_bytes = memmap_path.stat().st_size
+        if actual_bytes == expected_bytes:
+            print(f"[ECG] Memmap cache loaded: {memmap_path} ({n:,} records, {actual_bytes / 1e9:.1f} GB)")
+            return memmap_path, shape
+        else:
+            print(f"[ECG] Memmap size mismatch ({actual_bytes} vs {expected_bytes}), rebuilding ...")
+            memmap_path.unlink()
+
+    size_gb = n * ECG_LEADS * ECG_LENGTH * 4 / 1e9
+    print(f"[ECG] Building memmap cache for {n:,} records (~{size_gb:.1f} GB, one-time operation) ...")
+    mmap = np.memmap(str(memmap_path), dtype=np.float32, mode='w+', shape=shape)
+
+    for i in tqdm(range(n), desc="Pre-caching ECG signals"):
+        try:
+            ecg = load_ecg_signal(local_paths[i])
+        except Exception:
+            ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
+
+        # Clean and z-score (same logic as the old __getitem__)
+        ecg = np.nan_to_num(ecg, nan=0.0, posinf=0.0, neginf=0.0)
+        lead_mean = ecg.mean(axis=1, keepdims=True)
+        lead_std  = ecg.std(axis=1, keepdims=True) + 1e-8
+        ecg = (ecg - lead_mean) / lead_std
+
+        mmap[i] = ecg
+
+        # Flush periodically to avoid memory buildup
+        if (i + 1) % 10000 == 0:
+            mmap.flush()
+
+    mmap.flush()
+    del mmap  # close the write handle
+
+    print(f"[ECG] Memmap cache saved: {memmap_path}")
+    return memmap_path, shape
+
+
+# ==========================================
+# FAST MEMMAP-BACKED PYTORCH DATASET
 # ==========================================
 
 class MultimodalCardiacDataset(Dataset):
     """
-    Memory-efficient Dataset that lazy-loads ECG signals from local cache.
+    Fast Dataset that reads pre-processed ECG signals from a memory-mapped file.
 
-    Only clinical data and labels are held in RAM.
-    ECG waveforms are read from disk on each __getitem__ call,
-    keeping memory usage at ~100 MB instead of ~28 GB.
+    The memmap is opened lazily in each DataLoader worker process to avoid
+    pickling issues on Windows multiprocessing.
 
     Parameters
     ----------
-    ecg_paths     : list of str — local wfdb record paths (no extension)
+    memmap_path   : Path — file path to the ECG memmap
+    memmap_shape  : tuple — (n_total_records, 12, 5000)
+    ecg_indices   : np.ndarray — global indices into the memmap for this split
     clinical_data : np.ndarray of shape (N, num_features)
     labels        : np.ndarray of shape (N,)
+    augment       : bool — whether to apply ECG augmentation (training only)
     """
 
-    def __init__(self, ecg_paths: list, clinical_data: np.ndarray, labels: np.ndarray):
-        self.ecg_paths     = ecg_paths
+    def __init__(self, memmap_path, memmap_shape: tuple,
+                 ecg_indices: np.ndarray, clinical_data: np.ndarray,
+                 labels: np.ndarray, augment: bool = False):
+        self.memmap_path   = str(memmap_path)
+        self.memmap_shape  = memmap_shape
+        self.ecg_indices   = np.asarray(ecg_indices)
         self.clinical_data = torch.tensor(clinical_data, dtype=torch.float32)
         self.labels        = torch.tensor(labels, dtype=torch.float32)
+        self.augment       = augment
+        self._ecg_memmap   = None  # opened lazily per worker
+
+    def _get_memmap(self):
+        """Open the memmap lazily — each worker gets its own file handle."""
+        if self._ecg_memmap is None:
+            self._ecg_memmap = np.memmap(
+                self.memmap_path, dtype=np.float32, mode='r',
+                shape=self.memmap_shape,
+            )
+        return self._ecg_memmap
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        # Lazy-load ECG from local cache
-        try:
-            ecg = load_ecg_signal(self.ecg_paths[idx])
-        except Exception:
-            # Return zeros if a record fails to load
-            ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
+        # Fast memmap read — microseconds instead of ~10ms per wfdb call
+        mmap = self._get_memmap()
+        ecg = np.array(mmap[self.ecg_indices[idx]])  # copy to writable array
 
-        # Clean NaN/inf and normalize per-lead (z-score)
-        ecg = np.nan_to_num(ecg, nan=0.0, posinf=0.0, neginf=0.0)
-        lead_mean = ecg.mean(axis=1, keepdims=True)
-        lead_std  = ecg.std(axis=1, keepdims=True) + 1e-8
-        ecg = (ecg - lead_mean) / lead_std
+        # Apply augmentation during training
+        if self.augment:
+            ecg = _augment_ecg(ecg)
 
         ecg_tensor = torch.tensor(ecg, dtype=torch.float32)
         return ecg_tensor, self.clinical_data[idx], self.labels[idx]
@@ -344,23 +462,39 @@ def load_and_prepare_data(
     print(f"[DATA] Clinical features: {clinical_raw.shape[1]} (cleaned)")
     print(f"[DATA] AMI prevalence: {labels.mean():.4%}  ({int(labels.sum()):,} / {n_samples:,})")
 
-    # ── Download ECG signals from S3 (multithreaded, with caching) ───────
-    download_all_ecgs(ecg_paths)
-
-    # ── Build local cache paths ──────────────────────────────────────────
+    # ── ECG loading: use memmap if available, else download + build ────
+    # Build local cache paths (cheap string manipulation, no disk I/O)
     local_paths = [_get_local_record_path(p, ECG_CACHE_DIR) for p in ecg_paths]
 
-    # Filter out records that failed to download
-    valid_mask = np.array([_is_cached(p) for p in local_paths])
-    if not valid_mask.all():
-        n_before = n_samples
-        valid_indices = np.where(valid_mask)[0]
-        local_paths  = [local_paths[i] for i in valid_indices]
-        clinical_raw = clinical_raw[valid_mask]
-        labels       = labels[valid_mask]
-        df           = df.iloc[valid_indices].reset_index(drop=True)
-        n_samples    = len(labels)
-        print(f"[DATA] Filtered: {n_before:,} → {n_samples:,} (removed {n_before - n_samples:,} failed)")
+    # Check if a valid memmap already exists for this dataset size.
+    # If so, skip S3 download and individual file validation entirely.
+    # This allows users to delete the individual .hea/.dat files after
+    # the memmap has been built, freeing ~28 GB of disk space.
+    candidate_memmap = _ecg_memmap_path(n_samples)
+    expected_bytes = n_samples * ECG_LEADS * ECG_LENGTH * 4  # float32
+
+    if candidate_memmap.exists() and candidate_memmap.stat().st_size == expected_bytes:
+        print(f"[ECG] Memmap cache valid, skipping individual file checks")
+        ecg_memmap_path = candidate_memmap
+        ecg_memmap_shape = (n_samples, ECG_LEADS, ECG_LENGTH)
+    else:
+        # First run (or memmap missing): download from S3 + validate + build memmap
+        download_all_ecgs(ecg_paths)
+
+        # Filter out records that failed to download
+        valid_mask = np.array([_is_cached(p) for p in local_paths])
+        if not valid_mask.all():
+            n_before = n_samples
+            valid_indices = np.where(valid_mask)[0]
+            local_paths  = [local_paths[i] for i in valid_indices]
+            clinical_raw = clinical_raw[valid_mask]
+            labels       = labels[valid_mask]
+            df           = df.iloc[valid_indices].reset_index(drop=True)
+            n_samples    = len(labels)
+            print(f"[DATA] Filtered: {n_before:,} → {n_samples:,} (removed {n_before - n_samples:,} failed)")
+
+        # Build memory-mapped ECG cache (one-time)
+        ecg_memmap_path, ecg_memmap_shape = _build_ecg_memmap(local_paths)
 
     # ══════════════════════════════════════════════════════════════════════
     # STAGE 1: Split off held-out TEST SET (15%)
@@ -388,6 +522,11 @@ def load_and_prepare_data(
         "test_labels":      labels[test_idx],
         "col_mean":         col_mean,
         "col_std":          col_std,
+        # Memmap info so store_predictions.py can read ECGs without
+        # needing the individual .hea/.dat wfdb files on disk.
+        "ecg_memmap_path":  ecg_memmap_path,
+        "ecg_memmap_shape": ecg_memmap_shape,
+        "test_ecg_indices": test_idx,
     }
 
     # ══════════════════════════════════════════════════════════════════════
@@ -403,14 +542,15 @@ def load_and_prepare_data(
     train_idx = train_pool_idx[train_sub_idx]
     val_idx   = train_pool_idx[val_sub_idx]
 
-    train_paths = [local_paths[i] for i in train_idx]
-    val_paths   = [local_paths[i] for i in val_idx]
-
     train_ds = MultimodalCardiacDataset(
-        train_paths, clinical_standardized[train_idx], labels[train_idx]
+        ecg_memmap_path, ecg_memmap_shape,
+        train_idx, clinical_standardized[train_idx], labels[train_idx],
+        augment=True,   # ECG augmentation for training only
     )
     val_ds = MultimodalCardiacDataset(
-        val_paths, clinical_standardized[val_idx], labels[val_idx]
+        ecg_memmap_path, ecg_memmap_shape,
+        val_idx, clinical_standardized[val_idx], labels[val_idx],
+        augment=False,  # no augmentation for validation
     )
 
     effective_train_workers = NUM_WORKERS if train_num_workers is None else train_num_workers

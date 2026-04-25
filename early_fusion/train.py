@@ -21,7 +21,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from .config import (
-    SEED, NUM_EPOCHS, LEARNING_RATE,
+    SEED, NUM_EPOCHS, LEARNING_RATE, WEIGHT_DECAY,
     MODELS_DIR, PLOTS_DIR, METRICS_DIR,
     ECG_LEADS, ECG_LENGTH, NUM_CLINICAL_FEATURES, DROPOUT_RATE,
     DEFAULT_THRESHOLD, FOCAL_LOSS_ALPHA, FOCAL_LOSS_GAMMA,
@@ -47,7 +47,7 @@ def seed_everything(seed: int = SEED):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True  # safe with fixed input sizes, faster conv kernels
 
 
 def _build_empty_history() -> dict:
@@ -72,6 +72,7 @@ def _save_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
     optimizer: optim.Optimizer,
+    scheduler,
     epoch: int,
     best_val_f1: float,
     best_threshold: float,
@@ -84,6 +85,7 @@ def _save_checkpoint(
         "best_threshold": best_threshold,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
         "history": history,
         "args": vars(args),
         "random_state": random.getstate(),
@@ -99,6 +101,7 @@ def _resume_from_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
     optimizer: optim.Optimizer,
+    scheduler,
     device: torch.device,
 ):
     if not checkpoint_path.exists():
@@ -112,6 +115,14 @@ def _resume_from_checkpoint(
         print(f"[LOAD] Checkpoint incompatible with current model: {exc}")
         print("[LOAD] Starting fresh training run with the updated architecture.")
         return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
+
+    # Restore scheduler state if available
+    scheduler_state = checkpoint.get("scheduler_state_dict")
+    if scheduler is not None and scheduler_state is not None:
+        try:
+            scheduler.load_state_dict(scheduler_state)
+        except Exception:
+            pass  # scheduler config may have changed; let it re-initialize
 
     history = checkpoint.get("history", _build_empty_history())
     best_val_f1 = float(checkpoint.get("best_val_f1", 0.0))
@@ -199,13 +210,14 @@ def main():
         gamma=FOCAL_LOSS_GAMMA,
         pos_weight=pos_weight.to(device),
     )
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=1e-6)
 
     checkpoint_path = _latest_checkpoint_path()
     best_model_path = _best_model_path()
     resumed_from_checkpoint = checkpoint_path.exists()
     start_epoch, best_val_f1, best_threshold, history = _resume_from_checkpoint(
-        checkpoint_path, model, optimizer, device
+        checkpoint_path, model, optimizer, scheduler, device
     )
     active_threshold = best_threshold
 
@@ -216,9 +228,13 @@ def main():
     start_time = time.time()
     completed_epochs = max(start_epoch - 1, 0)
 
+    # Mixed precision scaler (float16 forward pass for ~2x GPU speedup)
+    scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
+
     for epoch in range(start_epoch, NUM_EPOCHS + 1):
         train_loss, train_metrics = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, threshold=active_threshold
+            model, train_loader, criterion, optimizer, device,
+            threshold=active_threshold, scaler=scaler,
         )
         val_loss, val_metrics = evaluate(
             model, val_loader, criterion, device, auto_threshold=True
@@ -250,8 +266,10 @@ def main():
                 " -- best model updated"
             )
 
+        scheduler.step()
+
         _save_checkpoint(
-            checkpoint_path, model, optimizer, epoch, best_val_f1, best_threshold, history, args
+            checkpoint_path, model, optimizer, scheduler, epoch, best_val_f1, best_threshold, history, args
         )
 
         if epoch < NUM_EPOCHS and not _should_continue(epoch + 1, NUM_EPOCHS):

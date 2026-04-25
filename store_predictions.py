@@ -66,7 +66,7 @@ MODEL_REGISTRY = {
             "n_leads":    12,
             "ecg_length": 5000,
             "n_clinical": 24,
-            "dropout":    0.4,
+            "dropout":    0.3,
         },
         "metrics":      "early_fusion/artifacts/metrics/metrics.json",
         "dataset_module": "early_fusion.dataset",
@@ -229,9 +229,19 @@ def load_model(model_name, device):
 # MODEL EVALUATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def evaluate_model(model, test_local_paths, test_clinical, test_labels, device, threshold=0.5):
+def evaluate_model(model, test_ecg_memmap, test_ecg_indices, test_clinical, test_labels, device, threshold=0.5):
     """
     Run inference on the test set and compute metrics.
+
+    Parameters
+    ----------
+    model           : nn.Module
+    test_ecg_memmap : np.memmap — memory-mapped ECG cache (all records)
+    test_ecg_indices: np.ndarray — indices into the memmap for the test split
+    test_clinical   : np.ndarray
+    test_labels     : np.ndarray
+    device          : torch.device
+    threshold       : float
 
     Returns
     -------
@@ -239,25 +249,14 @@ def evaluate_model(model, test_local_paths, test_clinical, test_labels, device, 
     all_probs : np.ndarray — predicted probabilities
     all_preds : np.ndarray — binary predictions
     """
-    from early_fusion.dataset import load_ecg_signal
-    from early_fusion.config import ECG_LEADS, ECG_LENGTH
-
     model.eval()
     all_probs = []
     all_preds = []
 
     with torch.no_grad():
         for i in range(len(test_labels)):
-            # Load ECG
-            try:
-                ecg = load_ecg_signal(test_local_paths[i])
-            except Exception:
-                ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
-
-            ecg = np.nan_to_num(ecg, nan=0.0, posinf=0.0, neginf=0.0)
-            lead_mean = ecg.mean(axis=1, keepdims=True)
-            lead_std  = ecg.std(axis=1, keepdims=True) + 1e-8
-            ecg = (ecg - lead_mean) / lead_std
+            # Read pre-z-scored ECG from memmap (fast)
+            ecg = np.array(test_ecg_memmap[test_ecg_indices[i]])
 
             ecg_t = torch.tensor(ecg, dtype=torch.float32).unsqueeze(0).to(device)
             cli_t = torch.tensor(test_clinical[i], dtype=torch.float32).unsqueeze(0).to(device)
@@ -319,6 +318,14 @@ def main():
     test_local_paths = test_metadata["test_local_paths"]
     test_clinical    = test_metadata["test_clinical"]
     test_labels      = test_metadata["test_labels"]
+    test_ecg_indices = test_metadata["test_ecg_indices"]
+
+    # Open ECG memmap for fast reads (no individual file dependency)
+    ecg_memmap_path  = test_metadata["ecg_memmap_path"]
+    ecg_memmap_shape = test_metadata["ecg_memmap_shape"]
+    test_ecg_memmap  = np.memmap(
+        str(ecg_memmap_path), dtype=np.float32, mode='r', shape=ecg_memmap_shape
+    )
 
     n_test = len(test_labels)
     print(f"\n[TEST] Test set: {n_test:,} patients  |  AMI: {int(test_labels.sum()):,}")
@@ -340,7 +347,8 @@ def main():
 
         print(f"  Evaluating on {n_test:,} test patients ...")
         metrics, probs, preds = evaluate_model(
-            model, test_local_paths, test_clinical, test_labels, DEVICE, threshold=info["threshold"]
+            model, test_ecg_memmap, test_ecg_indices, test_clinical, test_labels,
+            DEVICE, threshold=info["threshold"]
         )
 
         results[model_name] = {
@@ -433,22 +441,13 @@ def main():
     best_probs = best["probs"]
     best_preds = best["preds"]
 
-    from early_fusion.dataset import load_ecg_signal
     from early_fusion.config import ECG_LEADS, ECG_LENGTH
 
     print(f"\n  Running explainability for {n_test:,} patients ...")
 
     for i in tqdm(range(n_test), desc="Storing predictions"):
-        # Load ECG for attribution (needs gradients, can't use no_grad)
-        try:
-            ecg = load_ecg_signal(test_local_paths[i])
-        except Exception:
-            ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
-
-        ecg = np.nan_to_num(ecg, nan=0.0, posinf=0.0, neginf=0.0)
-        lead_mean = ecg.mean(axis=1, keepdims=True)
-        lead_std  = ecg.std(axis=1, keepdims=True) + 1e-8
-        ecg = (ecg - lead_mean) / lead_std
+        # Read pre-z-scored ECG from memmap (fast, no wfdb dependency)
+        ecg = np.array(test_ecg_memmap[test_ecg_indices[i]])
 
         ecg_tensor      = torch.tensor(ecg, dtype=torch.float32).unsqueeze(0)
         clinical_tensor = torch.tensor(test_clinical[i], dtype=torch.float32).unsqueeze(0)

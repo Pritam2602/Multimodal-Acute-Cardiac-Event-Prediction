@@ -63,32 +63,44 @@ def _compute_metrics(labels, probs, threshold):
 
 
 def train_one_epoch(model, loader, criterion, optimizer, device,
-                    max_grad_norm=1.0, threshold=DEFAULT_THRESHOLD):
+                    max_grad_norm=1.0, threshold=DEFAULT_THRESHOLD,
+                    scaler=None):
     model.train()
     running_loss = 0.0
     n_samples = 0
     all_probs, all_labels = [], []
+    use_amp = (scaler is not None and device.type == "cuda")
 
     for ecg, clinical, labels in loader:
-        ecg = ecg.to(device)
-        clinical = clinical.to(device)
-        labels = labels.to(device)
+        ecg = ecg.to(device, non_blocking=True)
+        clinical = clinical.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-        optimizer.zero_grad()
-        logits = model(ecg, clinical)
-        loss = criterion(logits, labels)
+        optimizer.zero_grad(set_to_none=True)
+
+        # Mixed precision forward pass
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            logits = model(ecg, clinical)
+            loss = criterion(logits, labels)
 
         if torch.isnan(loss):
             continue
 
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-        optimizer.step()
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+            optimizer.step()
 
         running_loss += loss.item() * labels.size(0)
         n_samples += labels.size(0)
 
-        probs = torch.sigmoid(logits.detach()).cpu().numpy()
+        probs = torch.sigmoid(logits.detach().float()).cpu().numpy()
         all_probs.extend(probs)
         all_labels.extend(labels.detach().cpu().numpy())
 
@@ -103,17 +115,20 @@ def evaluate(model, loader, criterion, device, threshold=DEFAULT_THRESHOLD,
     model.eval()
     running_loss = 0.0
     all_probs, all_labels = [], []
+    use_amp = (device.type == "cuda")
 
     for ecg, clinical, labels in loader:
-        ecg = ecg.to(device)
-        clinical = clinical.to(device)
-        labels = labels.to(device)
+        ecg = ecg.to(device, non_blocking=True)
+        clinical = clinical.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-        logits = model(ecg, clinical)
-        loss = criterion(logits, labels)
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            logits = model(ecg, clinical)
+            loss = criterion(logits, labels)
+
         running_loss += loss.item() * labels.size(0)
 
-        probs = torch.sigmoid(logits).cpu().numpy()
+        probs = torch.sigmoid(logits.float()).cpu().numpy()
         all_probs.extend(probs)
         all_labels.extend(labels.cpu().numpy())
 
