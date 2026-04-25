@@ -67,9 +67,9 @@ Because the model combines ECG and clinical information **before shared temporal
 
 ---
 
-## 2. Proposed Late Fusion
+## 2. Late Fusion
 
-Planned file: `late_fusion/model.py`
+File: `late_fusion/model.py`
 
 ### Current idea
 
