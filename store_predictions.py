@@ -71,19 +71,19 @@ MODEL_REGISTRY = {
         "metrics":      "early_fusion/artifacts/metrics/metrics.json",
         "dataset_module": "early_fusion.dataset",
     },
-    # ── Add late_fusion here when ready ──────────────────────────────────
-    # "late_fusion": {
-    #     "module":      "late_fusion.model",
-    #     "class":       "LateFusionModel",
-    #     "weights":     "late_fusion/artifacts/models/late_fusion_model.pth",
-    #     "config": {
-    #         "n_leads":    12,
-    #         "ecg_length": 5000,
-    #         "n_clinical": 24,
-    #         "dropout":    0.3,
-    #     },
-    #     "dataset_module": "late_fusion.dataset",
-    # },
+    "late_fusion": {
+        "module":      "late_fusion.model",
+        "class":       "LateFusionModel",
+        "weights":     "late_fusion/artifacts/models/late_fusion_model.pth",
+        "config": {
+            "n_leads":    12,
+            "ecg_length": 5000,
+            "n_clinical": 24,
+            "dropout":    0.4,
+        },
+        "metrics":      "late_fusion/artifacts/metrics/metrics.json",
+        "dataset_module": "late_fusion.dataset",
+    },
 }
 
 # Default DB location
@@ -368,6 +368,7 @@ def main():
     if not results:
         print("\n[ERROR] No trained models found. Train at least one model first.")
         print("  → python -m early_fusion.train")
+        print("  → python -m late_fusion.train")
         return
 
     # ══════════════════════════════════════════════════════════════════════

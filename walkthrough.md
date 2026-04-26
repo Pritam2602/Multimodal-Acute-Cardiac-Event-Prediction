@@ -39,9 +39,9 @@ So the model is genuinely early fusion, because the modalities are merged before
 
 ### Late fusion
 
-Not implemented yet as a separate module.
+Implemented in `late_fusion/model.py`.
 
-The intended late-fusion design is:
+The late-fusion design is:
 
 1. ECG branch processes only ECG using `Conv1D + BiLSTM`
 2. clinical branch processes only tabular features using an MLP
@@ -88,7 +88,7 @@ D:\MINI_PROJECT\
 |       |-- models/
 |       |-- metrics/
 |       `-- plots/
-`-- late_fusion/   # planned
+`-- late_fusion/
 ```
 
 ---
@@ -134,9 +134,9 @@ The comparison pipeline is handled by [store_predictions.py](/d:/MINI_PROJECT/st
 
 ### Current behavior
 
-Right now the registry is set up for `early_fusion`.
+Right now the registry is set up for `early_fusion` and `late_fusion`.
 
-Once `late_fusion` is implemented and trained, it can be added to the registry and compared automatically through the same script.
+Once `late_fusion` is trained, it can be compared automatically through the same script.
 
 ---
 
@@ -211,7 +211,7 @@ python api.py
 
 ## Planned late-fusion workflow
 
-After `late_fusion/` is created:
+After `late_fusion/` is trained:
 
 ```bash
 python -m late_fusion.train

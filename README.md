@@ -45,7 +45,7 @@ By integrating both physiological and biochemical information, the system aims t
 
 6. **Model Development**
    - **Early Fusion:** Combine ECG + EHR at input level
-   - **Late Fusion:** Process ECG and EHR separately, then combine
+   - **Late Fusion:** Process ECG and EHR separately, then combine prediction signals
 
 7. **Evaluation Metrics**
    - Accuracy
@@ -70,10 +70,21 @@ ECG → CNN → Embedding
 EHR → Dense → Embedding  
 → Concatenation → Dense Layers → Output (AMI)---
 
+Implemented under `late_fusion/`.
+
 ## Training Workflow
 
 - The training script now saves a resumable checkpoint after every epoch at early_fusion/artifacts/models/latest_checkpoint.pth.
 - The best validation-F1 model is saved at early_fusion/artifacts/models/early_fusion_model.pth.
 - After each epoch, the script asks whether it should continue to the next epoch.
 - If you stop and rerun the command later, it resumes from the next unfinished epoch automatically.
+
+Late-fusion training mirrors the same workflow:
+
+```bash
+python -m late_fusion.train
+```
+
+- The late-fusion checkpoint is saved at `late_fusion/artifacts/models/latest_checkpoint.pth`.
+- The best late-fusion model is saved at `late_fusion/artifacts/models/late_fusion_model.pth`.
 
