@@ -25,10 +25,11 @@ from .config import (
     MODELS_DIR, PLOTS_DIR, METRICS_DIR,
     ECG_LEADS, ECG_LENGTH, NUM_CLINICAL_FEATURES, DROPOUT_RATE,
     DEFAULT_THRESHOLD, FOCAL_LOSS_ALPHA, FOCAL_LOSS_GAMMA,
+    EARLY_STOPPING_PATIENCE, EARLY_STOPPING_MIN_DELTA, LOSS_NAME,
 )
 from .dataset import load_and_prepare_data
 from .engine import train_one_epoch, evaluate
-from .losses import FocalLoss
+from .losses import build_loss
 from .model import EarlyFusionModel
 from .plots import (
     save_accuracy_plot,
@@ -68,6 +69,22 @@ def _best_model_path() -> Path:
     return MODELS_DIR / "early_fusion_model.pth"
 
 
+def _resolve_artifact_dirs(run_name: str | None) -> tuple[Path, Path, Path]:
+    if not run_name:
+        return MODELS_DIR, PLOTS_DIR, METRICS_DIR
+
+    run_root = MODELS_DIR.parent / "runs" / run_name
+    return run_root / "models", run_root / "plots", run_root / "metrics"
+
+
+def _latest_checkpoint_path_for(models_dir: Path) -> Path:
+    return models_dir / "latest_checkpoint.pth"
+
+
+def _best_model_path_for(models_dir: Path) -> Path:
+    return models_dir / "early_fusion_model.pth"
+
+
 def _save_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
@@ -75,14 +92,18 @@ def _save_checkpoint(
     scheduler,
     epoch: int,
     best_val_f1: float,
+    best_epoch: int,
     best_threshold: float,
+    epochs_without_improvement: int,
     history: dict,
     args: argparse.Namespace,
 ):
     payload = {
         "epoch": epoch,
         "best_val_f1": best_val_f1,
+        "best_epoch": best_epoch,
         "best_threshold": best_threshold,
+        "epochs_without_improvement": epochs_without_improvement,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
@@ -105,7 +126,7 @@ def _resume_from_checkpoint(
     device: torch.device,
 ):
     if not checkpoint_path.exists():
-        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
+        return 1, 0.0, 0, DEFAULT_THRESHOLD, 0, _build_empty_history()
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     try:
@@ -114,7 +135,7 @@ def _resume_from_checkpoint(
     except RuntimeError as exc:
         print(f"[LOAD] Checkpoint incompatible with current model: {exc}")
         print("[LOAD] Starting fresh training run with the updated architecture.")
-        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
+        return 1, 0.0, 0, DEFAULT_THRESHOLD, 0, _build_empty_history()
 
     # Restore scheduler state if available
     scheduler_state = checkpoint.get("scheduler_state_dict")
@@ -126,7 +147,9 @@ def _resume_from_checkpoint(
 
     history = checkpoint.get("history", _build_empty_history())
     best_val_f1 = float(checkpoint.get("best_val_f1", 0.0))
+    best_epoch = int(checkpoint.get("best_epoch", 0))
     best_threshold = float(checkpoint.get("best_threshold", DEFAULT_THRESHOLD))
+    epochs_without_improvement = int(checkpoint.get("epochs_without_improvement", 0))
     last_epoch = int(checkpoint.get("epoch", 0))
 
     random_state = checkpoint.get("random_state")
@@ -148,8 +171,10 @@ def _resume_from_checkpoint(
     next_epoch = last_epoch + 1
     print(f"[LOAD] Resuming from epoch {next_epoch} using {checkpoint_path}")
     print(f"[LOAD] Best Val F1 so far: {best_val_f1:.4f}")
+    if best_epoch:
+        print(f"[LOAD] Best epoch so far: {best_epoch}")
     print(f"[LOAD] Best threshold so far: {best_threshold:.4f}")
-    return next_epoch, best_val_f1, best_threshold, history
+    return next_epoch, best_val_f1, best_epoch, best_threshold, epochs_without_improvement, history
 
 
 def _should_continue(next_epoch: int, total_epochs: int) -> bool:
@@ -170,6 +195,30 @@ def main():
                         help="Override training DataLoader worker count")
     parser.add_argument("--val-workers", type=int, default=None,
                         help="Override validation DataLoader worker count")
+    parser.add_argument("--weighted-sampling", action="store_true",
+                        help="Use a weighted sampler for training batches")
+    parser.add_argument("--epochs", type=int, default=NUM_EPOCHS,
+                        help="Total training epochs")
+    parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE,
+                        help="Optimizer learning rate")
+    parser.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY,
+                        help="AdamW weight decay")
+    parser.add_argument("--dropout", type=float, default=DROPOUT_RATE,
+                        help="Dropout rate for the model")
+    parser.add_argument("--loss-name", choices=["focal", "bce"], default=LOSS_NAME,
+                        help="Loss function to use")
+    parser.add_argument("--focal-alpha", type=float, default=FOCAL_LOSS_ALPHA,
+                        help="Alpha parameter for focal loss")
+    parser.add_argument("--focal-gamma", type=float, default=FOCAL_LOSS_GAMMA,
+                        help="Gamma parameter for focal loss")
+    parser.add_argument("--early-stopping-patience", type=int, default=EARLY_STOPPING_PATIENCE,
+                        help="Stop after this many non-improving epochs; set 0 to disable")
+    parser.add_argument("--early-stopping-min-delta", type=float, default=EARLY_STOPPING_MIN_DELTA,
+                        help="Minimum F1 improvement to reset early stopping")
+    parser.add_argument("--auto-continue", action="store_true",
+                        help="Run through epochs without interactive prompts")
+    parser.add_argument("--run-name", type=str, default=None,
+                        help="Optional subdirectory name under artifacts/runs for this experiment")
     args = parser.parse_args()
 
     seed_everything()
@@ -177,7 +226,20 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Device: {device}")
 
-    for directory in [MODELS_DIR, PLOTS_DIR, METRICS_DIR]:
+    models_dir, plots_dir, metrics_dir = _resolve_artifact_dirs(args.run_name)
+
+    print(
+        f"[RUN] epochs={args.epochs} lr={args.learning_rate} wd={args.weight_decay} "
+        f"dropout={args.dropout} loss={args.loss_name} weighted_sampling={args.weighted_sampling}"
+    )
+    if args.loss_name == "focal":
+        print(f"[RUN] focal_alpha={args.focal_alpha} focal_gamma={args.focal_gamma}")
+    print(
+        f"[RUN] early_stopping_patience={args.early_stopping_patience} "
+        f"min_delta={args.early_stopping_min_delta}"
+    )
+
+    for directory in [models_dir, plots_dir, metrics_dir]:
         directory.mkdir(parents=True, exist_ok=True)
         print(f"[DIR]  {directory}")
 
@@ -188,6 +250,7 @@ def main():
         subset=args.subset,
         train_num_workers=args.num_workers,
         val_num_workers=args.val_workers,
+        weighted_sampling=args.weighted_sampling,
     )
 
     print("\n" + "=" * 70)
@@ -197,7 +260,7 @@ def main():
         n_leads=ECG_LEADS,
         ecg_length=ECG_LENGTH,
         n_clinical=NUM_CLINICAL_FEATURES,
-        dropout=DROPOUT_RATE,
+        dropout=args.dropout,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -205,18 +268,19 @@ def main():
     print(f"[MODEL] Total parameters : {total_params:,}")
     print(f"[MODEL] Trainable params : {train_params:,}")
 
-    criterion = FocalLoss(
-        alpha=FOCAL_LOSS_ALPHA,
-        gamma=FOCAL_LOSS_GAMMA,
+    criterion = build_loss(
+        args.loss_name,
         pos_weight=pos_weight.to(device),
+        alpha=args.focal_alpha,
+        gamma=args.focal_gamma,
     )
-    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=1e-6)
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
-    checkpoint_path = _latest_checkpoint_path()
-    best_model_path = _best_model_path()
+    checkpoint_path = _latest_checkpoint_path_for(models_dir)
+    best_model_path = _best_model_path_for(models_dir)
     resumed_from_checkpoint = checkpoint_path.exists()
-    start_epoch, best_val_f1, best_threshold, history = _resume_from_checkpoint(
+    start_epoch, best_val_f1, best_epoch, best_threshold, epochs_without_improvement, history = _resume_from_checkpoint(
         checkpoint_path, model, optimizer, scheduler, device
     )
     active_threshold = best_threshold
@@ -231,7 +295,9 @@ def main():
     # Mixed precision scaler (float16 forward pass for ~2x GPU speedup)
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
-    for epoch in range(start_epoch, NUM_EPOCHS + 1):
+    stop_reason = "completed"
+
+    for epoch in range(start_epoch, args.epochs + 1):
         train_loss, train_metrics = train_one_epoch(
             model, train_loader, criterion, optimizer, device,
             threshold=active_threshold, scaler=scaler,
@@ -257,22 +323,51 @@ def main():
         )
 
         completed_epochs = epoch
-        if (not resumed_from_checkpoint and epoch == 1) or (val_metrics["f1"] > best_val_f1):
+        improved = ((not resumed_from_checkpoint and epoch == 1) or
+                    (val_metrics["f1"] > best_val_f1 + args.early_stopping_min_delta))
+
+        if improved:
             best_val_f1 = val_metrics["f1"]
+            best_epoch = epoch
             best_threshold = active_threshold
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), best_model_path)
             print(
                 f"         ^ New best Val F1 = {best_val_f1:.4f} at threshold {best_threshold:.4f}"
                 " -- best model updated"
             )
+        else:
+            epochs_without_improvement += 1
 
         scheduler.step()
 
         _save_checkpoint(
-            checkpoint_path, model, optimizer, scheduler, epoch, best_val_f1, best_threshold, history, args
+            checkpoint_path,
+            model,
+            optimizer,
+            scheduler,
+            epoch,
+            best_val_f1,
+            best_epoch,
+            best_threshold,
+            epochs_without_improvement,
+            history,
+            args,
         )
 
-        if epoch < NUM_EPOCHS and not _should_continue(epoch + 1, NUM_EPOCHS):
+        if args.early_stopping_patience > 0 and epochs_without_improvement >= args.early_stopping_patience:
+            stop_reason = "early_stopping"
+            print(
+                f"[STOP] Early stopping triggered at epoch {epoch} "
+                f"(best epoch: {best_epoch}, best Val F1: {best_val_f1:.4f})."
+            )
+            break
+
+        if args.auto_continue:
+            continue
+
+        if epoch < args.epochs and not _should_continue(epoch + 1, args.epochs):
+            stop_reason = "user_stop"
             print(f"[STOP] Training paused after epoch {epoch}. Rerun the script to resume from epoch {epoch + 1}.")
             break
 
@@ -280,7 +375,7 @@ def main():
     print("-" * 86)
     print(
         f"[DONE] Training session finished in {elapsed:.1f}s  |  "
-        f"Completed epochs: {completed_epochs} | Best Val F1: {best_val_f1:.4f} | "
+        f"Completed epochs: {completed_epochs} | Best epoch: {best_epoch} | Best Val F1: {best_val_f1:.4f} | "
         f"Best threshold: {best_threshold:.4f}"
     )
 
@@ -305,11 +400,20 @@ def main():
             **{k: round(v, 6) for k, v in final_val_metrics.items()},
         },
         "best_val_f1": round(best_val_f1, 6),
+        "best_epoch": best_epoch,
         "best_threshold": round(best_threshold, 6),
         "epochs_completed": completed_epochs,
-        "target_epochs": NUM_EPOCHS,
-        "learning_rate": LEARNING_RATE,
-        "loss_name": "FocalLoss",
+        "target_epochs": args.epochs,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "dropout": args.dropout,
+        "loss_name": args.loss_name,
+        "weighted_sampling": args.weighted_sampling,
+        "focal_alpha": args.focal_alpha if args.loss_name == "focal" else None,
+        "focal_gamma": args.focal_gamma if args.loss_name == "focal" else None,
+        "early_stopping_patience": args.early_stopping_patience,
+        "early_stopping_min_delta": args.early_stopping_min_delta,
+        "stopping_reason": stop_reason,
         "history": {k: [round(v, 6) for v in vals] for k, vals in history.items()},
         "validation_outputs": {
             "labels": [int(v) for v in final_val_outputs["labels"]],
@@ -318,7 +422,7 @@ def main():
         },
     }
 
-    metrics_path = METRICS_DIR / "metrics.json"
+    metrics_path = metrics_dir / "metrics.json"
     with open(metrics_path, "w") as f:
         json.dump(metrics_payload, f, indent=2)
     print(f"\n[SAVE] Metrics -> {metrics_path}")
@@ -328,7 +432,7 @@ def main():
         {"split": "Validation", "loss": final_val_loss, **final_val_metrics},
     ]
 
-    comparison_csv_path = METRICS_DIR / "comparison_table.csv"
+    comparison_csv_path = metrics_dir / "comparison_table.csv"
     with open(comparison_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(
             f,
@@ -342,29 +446,29 @@ def main():
             writer.writerow({k: round(v, 6) if isinstance(v, float) else v for k, v in row.items()})
     print(f"[SAVE] Comparison table -> {comparison_csv_path}")
 
-    save_loss_plot(history, str(PLOTS_DIR / "loss.png"))
-    save_accuracy_plot(history, str(PLOTS_DIR / "accuracy.png"))
-    save_metric_plot(history, "precision", "Precision", str(PLOTS_DIR / "precision.png"))
-    save_metric_plot(history, "recall", "Recall", str(PLOTS_DIR / "recall.png"))
-    save_metric_plot(history, "f1", "F1 Score", str(PLOTS_DIR / "f1.png"))
+    save_loss_plot(history, str(plots_dir / "loss.png"))
+    save_accuracy_plot(history, str(plots_dir / "accuracy.png"))
+    save_metric_plot(history, "precision", "Precision", str(plots_dir / "precision.png"))
+    save_metric_plot(history, "recall", "Recall", str(plots_dir / "recall.png"))
+    save_metric_plot(history, "f1", "F1 Score", str(plots_dir / "f1.png"))
     save_confusion_matrix_plot(
         final_val_outputs["labels"],
         final_val_outputs["preds"],
-        str(PLOTS_DIR / "confusion_matrix.png"),
+        str(plots_dir / "confusion_matrix.png"),
     )
     save_roc_curve_plot(
         final_val_outputs["labels"],
         final_val_outputs["probs"],
         final_val_metrics["auc"],
-        str(PLOTS_DIR / "roc_curve.png"),
+        str(plots_dir / "roc_curve.png"),
     )
     save_pr_curve_plot(
         final_val_outputs["labels"],
         final_val_outputs["probs"],
         final_val_metrics["average_precision"],
-        str(PLOTS_DIR / "pr_curve.png"),
+        str(plots_dir / "pr_curve.png"),
     )
-    save_model_comparison_table(comparison_rows, str(PLOTS_DIR / "model_comparison_table.png"))
+    save_model_comparison_table(comparison_rows, str(plots_dir / "model_comparison_table.png"))
 
     print("\n" + "=" * 70)
     print(" ARTIFACTS SAVED")
@@ -373,15 +477,15 @@ def main():
     print(f"  Checkpoint : {checkpoint_path}")
     print(f"  Metrics    : {metrics_path}")
     print(f"               {comparison_csv_path}")
-    print(f"  Plots      : {PLOTS_DIR / 'loss.png'}")
-    print(f"               {PLOTS_DIR / 'accuracy.png'}")
-    print(f"               {PLOTS_DIR / 'precision.png'}")
-    print(f"               {PLOTS_DIR / 'recall.png'}")
-    print(f"               {PLOTS_DIR / 'f1.png'}")
-    print(f"               {PLOTS_DIR / 'confusion_matrix.png'}")
-    print(f"               {PLOTS_DIR / 'roc_curve.png'}")
-    print(f"               {PLOTS_DIR / 'pr_curve.png'}")
-    print(f"               {PLOTS_DIR / 'model_comparison_table.png'}")
+    print(f"  Plots      : {plots_dir / 'loss.png'}")
+    print(f"               {plots_dir / 'accuracy.png'}")
+    print(f"               {plots_dir / 'precision.png'}")
+    print(f"               {plots_dir / 'recall.png'}")
+    print(f"               {plots_dir / 'f1.png'}")
+    print(f"               {plots_dir / 'confusion_matrix.png'}")
+    print(f"               {plots_dir / 'roc_curve.png'}")
+    print(f"               {plots_dir / 'pr_curve.png'}")
+    print(f"               {plots_dir / 'model_comparison_table.png'}")
     print("=" * 70)
 
 

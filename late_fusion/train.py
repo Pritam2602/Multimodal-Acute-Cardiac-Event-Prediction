@@ -34,7 +34,7 @@ from .config import (
 )
 from .dataset import load_and_prepare_data
 from .engine import train_one_epoch, evaluate
-from .losses import FocalLoss
+from .losses import build_loss
 from .model import LateFusionModel
 from .plots import (
     save_accuracy_plot,
@@ -72,6 +72,14 @@ def _latest_checkpoint_path() -> Path:
 
 def _best_model_path() -> Path:
     return MODELS_DIR / "late_fusion_model.pth"
+
+
+def _resolve_artifact_dirs(run_name: str | None) -> tuple[Path, Path, Path]:
+    if not run_name:
+        return MODELS_DIR, PLOTS_DIR, METRICS_DIR
+
+    run_root = MODELS_DIR.parent / "runs" / run_name
+    return run_root / "models", run_root / "plots", run_root / "metrics"
 
 
 def _save_checkpoint(
@@ -171,6 +179,24 @@ def main():
                         help="Override training DataLoader worker count")
     parser.add_argument("--val-workers", type=int, default=None,
                         help="Override validation DataLoader worker count")
+    parser.add_argument("--epochs", type=int, default=NUM_EPOCHS,
+                        help="Total training epochs")
+    parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE,
+                        help="Optimizer learning rate")
+    parser.add_argument("--dropout", type=float, default=DROPOUT_RATE,
+                        help="Dropout rate for the model")
+    parser.add_argument("--loss-name", choices=["focal", "bce"], default="focal",
+                        help="Loss function to use")
+    parser.add_argument("--focal-alpha", type=float, default=FOCAL_LOSS_ALPHA,
+                        help="Alpha parameter for focal loss")
+    parser.add_argument("--focal-gamma", type=float, default=FOCAL_LOSS_GAMMA,
+                        help="Gamma parameter for focal loss")
+    parser.add_argument("--weighted-sampling", action="store_true",
+                        help="Use a weighted sampler for training batches")
+    parser.add_argument("--auto-continue", action="store_true",
+                        help="Run through epochs without interactive prompts")
+    parser.add_argument("--run-name", type=str, default=None,
+                        help="Optional subdirectory name under artifacts/runs for this experiment")
     args = parser.parse_args()
 
     seed_everything()
@@ -178,7 +204,13 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Device: {device}")
 
-    for directory in [MODELS_DIR, PLOTS_DIR, METRICS_DIR]:
+    models_dir, plots_dir, metrics_dir = _resolve_artifact_dirs(args.run_name)
+    print(
+        f"[RUN] epochs={args.epochs} lr={args.learning_rate} dropout={args.dropout} "
+        f"loss={args.loss_name} weighted_sampling={args.weighted_sampling}"
+    )
+
+    for directory in [models_dir, plots_dir, metrics_dir]:
         directory.mkdir(parents=True, exist_ok=True)
         print(f"[DIR]  {directory}")
 
@@ -189,6 +221,7 @@ def main():
         subset=args.subset,
         train_num_workers=args.num_workers,
         val_num_workers=args.val_workers,
+        weighted_sampling=args.weighted_sampling,
     )
 
     print("\n" + "=" * 70)
@@ -198,7 +231,7 @@ def main():
         n_leads=ECG_LEADS,
         ecg_length=ECG_LENGTH,
         n_clinical=NUM_CLINICAL_FEATURES,
-        dropout=DROPOUT_RATE,
+        dropout=args.dropout,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -206,15 +239,16 @@ def main():
     print(f"[MODEL] Total parameters : {total_params:,}")
     print(f"[MODEL] Trainable params : {train_params:,}")
 
-    criterion = FocalLoss(
-        alpha=FOCAL_LOSS_ALPHA,
-        gamma=FOCAL_LOSS_GAMMA,
+    criterion = build_loss(
+        args.loss_name,
         pos_weight=pos_weight.to(device),
+        alpha=args.focal_alpha,
+        gamma=args.focal_gamma,
     )
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
 
-    checkpoint_path = _latest_checkpoint_path()
-    best_model_path = _best_model_path()
+    checkpoint_path = models_dir / "latest_checkpoint.pth"
+    best_model_path = models_dir / "late_fusion_model.pth"
     resumed_from_checkpoint = checkpoint_path.exists()
     start_epoch, best_val_f1, best_threshold, history = _resume_from_checkpoint(
         checkpoint_path, model, optimizer, device
@@ -228,7 +262,7 @@ def main():
     start_time = time.time()
     completed_epochs = max(start_epoch - 1, 0)
 
-    for epoch in range(start_epoch, NUM_EPOCHS + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         train_loss, train_metrics = train_one_epoch(
             model, train_loader, criterion, optimizer, device, threshold=active_threshold
         )
@@ -266,7 +300,10 @@ def main():
             checkpoint_path, model, optimizer, epoch, best_val_f1, best_threshold, history, args
         )
 
-        if epoch < NUM_EPOCHS and not _should_continue(epoch + 1, NUM_EPOCHS):
+        if args.auto_continue:
+            continue
+
+        if epoch < args.epochs and not _should_continue(epoch + 1, args.epochs):
             print(f"[STOP] Training paused after epoch {epoch}. Rerun the script to resume from epoch {epoch + 1}.")
             break
 
@@ -301,9 +338,13 @@ def main():
         "best_val_f1": round(best_val_f1, 6),
         "best_threshold": round(best_threshold, 6),
         "epochs_completed": completed_epochs,
-        "target_epochs": NUM_EPOCHS,
-        "learning_rate": LEARNING_RATE,
-        "loss_name": "FocalLoss",
+        "target_epochs": args.epochs,
+        "learning_rate": args.learning_rate,
+        "dropout": args.dropout,
+        "loss_name": args.loss_name,
+        "weighted_sampling": args.weighted_sampling,
+        "focal_alpha": args.focal_alpha if args.loss_name == "focal" else None,
+        "focal_gamma": args.focal_gamma if args.loss_name == "focal" else None,
         "history": {k: [round(v, 6) for v in vals] for k, vals in history.items()},
         "validation_outputs": {
             "labels": [int(v) for v in final_val_outputs["labels"]],
@@ -312,7 +353,7 @@ def main():
         },
     }
 
-    metrics_path = METRICS_DIR / "metrics.json"
+    metrics_path = metrics_dir / "metrics.json"
     with open(metrics_path, "w") as f:
         json.dump(metrics_payload, f, indent=2)
     print(f"\n[SAVE] Metrics -> {metrics_path}")
@@ -322,7 +363,7 @@ def main():
         {"split": "Validation", "loss": final_val_loss, **final_val_metrics},
     ]
 
-    comparison_csv_path = METRICS_DIR / "comparison_table.csv"
+    comparison_csv_path = metrics_dir / "comparison_table.csv"
     with open(comparison_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(
             f,
@@ -336,29 +377,29 @@ def main():
             writer.writerow({k: round(v, 6) if isinstance(v, float) else v for k, v in row.items()})
     print(f"[SAVE] Comparison table -> {comparison_csv_path}")
 
-    save_loss_plot(history, str(PLOTS_DIR / "loss.png"))
-    save_accuracy_plot(history, str(PLOTS_DIR / "accuracy.png"))
-    save_metric_plot(history, "precision", "Precision", str(PLOTS_DIR / "precision.png"))
-    save_metric_plot(history, "recall", "Recall", str(PLOTS_DIR / "recall.png"))
-    save_metric_plot(history, "f1", "F1 Score", str(PLOTS_DIR / "f1.png"))
+    save_loss_plot(history, str(plots_dir / "loss.png"))
+    save_accuracy_plot(history, str(plots_dir / "accuracy.png"))
+    save_metric_plot(history, "precision", "Precision", str(plots_dir / "precision.png"))
+    save_metric_plot(history, "recall", "Recall", str(plots_dir / "recall.png"))
+    save_metric_plot(history, "f1", "F1 Score", str(plots_dir / "f1.png"))
     save_confusion_matrix_plot(
         final_val_outputs["labels"],
         final_val_outputs["preds"],
-        str(PLOTS_DIR / "confusion_matrix.png"),
+        str(plots_dir / "confusion_matrix.png"),
     )
     save_roc_curve_plot(
         final_val_outputs["labels"],
         final_val_outputs["probs"],
         final_val_metrics["auc"],
-        str(PLOTS_DIR / "roc_curve.png"),
+        str(plots_dir / "roc_curve.png"),
     )
     save_pr_curve_plot(
         final_val_outputs["labels"],
         final_val_outputs["probs"],
         final_val_metrics["average_precision"],
-        str(PLOTS_DIR / "pr_curve.png"),
+        str(plots_dir / "pr_curve.png"),
     )
-    save_model_comparison_table(comparison_rows, str(PLOTS_DIR / "model_comparison_table.png"))
+    save_model_comparison_table(comparison_rows, str(plots_dir / "model_comparison_table.png"))
 
     print("\n" + "=" * 70)
     print(" ARTIFACTS SAVED")
@@ -367,15 +408,15 @@ def main():
     print(f"  Checkpoint : {checkpoint_path}")
     print(f"  Metrics    : {metrics_path}")
     print(f"               {comparison_csv_path}")
-    print(f"  Plots      : {PLOTS_DIR / 'loss.png'}")
-    print(f"               {PLOTS_DIR / 'accuracy.png'}")
-    print(f"               {PLOTS_DIR / 'precision.png'}")
-    print(f"               {PLOTS_DIR / 'recall.png'}")
-    print(f"               {PLOTS_DIR / 'f1.png'}")
-    print(f"               {PLOTS_DIR / 'confusion_matrix.png'}")
-    print(f"               {PLOTS_DIR / 'roc_curve.png'}")
-    print(f"               {PLOTS_DIR / 'pr_curve.png'}")
-    print(f"               {PLOTS_DIR / 'model_comparison_table.png'}")
+    print(f"  Plots      : {plots_dir / 'loss.png'}")
+    print(f"               {plots_dir / 'accuracy.png'}")
+    print(f"               {plots_dir / 'precision.png'}")
+    print(f"               {plots_dir / 'recall.png'}")
+    print(f"               {plots_dir / 'f1.png'}")
+    print(f"               {plots_dir / 'confusion_matrix.png'}")
+    print(f"               {plots_dir / 'roc_curve.png'}")
+    print(f"               {plots_dir / 'pr_curve.png'}")
+    print(f"               {plots_dir / 'model_comparison_table.png'}")
     print("=" * 70)
 
 

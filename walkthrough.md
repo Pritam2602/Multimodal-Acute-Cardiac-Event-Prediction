@@ -1,175 +1,155 @@
-# Walkthrough: Training, Comparison, and Serving
+# Walkthrough: Training, Validation, Comparison, and Serving
 
-This file explains how the current AMI prediction pipeline works end to end: training, model comparison, prediction storage, explainability, and API serving.
+This file explains the current end-to-end workflow in the repository.
 
-For the architecture details, use [architecture_summary.md](/d:/MINI_PROJECT/architecture_summary.md:1) as the main reference.
+For model design details, see [architecture_summary.md](/abs/path/d:/MINI_PROJECT/architecture_summary.md:1).
 
-## What the project does
+## What the Project Does
 
-The project predicts **Acute Myocardial Infarction (AMI)** from:
+The system predicts Acute Myocardial Infarction from:
 
-- raw 12-lead ECG waveforms
-- structured clinical EHR features
+- raw 12-lead ECG signals
+- structured clinical features derived from EHR data
 
-The repository is set up to support a fair comparison between:
+There are now two active modeling paths:
 
-- a **current early-fusion model**
-- a **planned late-fusion model**
+- early fusion
+- late fusion
 
-After training, the system can evaluate all available models on the same test set, choose the best one, generate reasoning, and serve the results through a shared API.
+## Typical Workflow
 
----
+```text
+Prepare fused dataset
+-> train or cross-validate a fusion model
+-> save metrics and artifacts
+-> evaluate registered models with store_predictions.py
+-> write patient-level results to SQLite
+-> serve the results with api.py
+```
 
-## Current model status
+## Single-Run Training
 
 ### Early fusion
 
-Implemented in [early_fusion/model.py](/d:/MINI_PROJECT/early_fusion/model.py:1).
+```powershell
+python -m early_fusion.train --auto-continue
+```
 
-The current early-fusion model works like this:
+Common options:
 
-1. clinical features are projected into a small number of channels
-2. those channels are repeated across the ECG timeline
-3. they are concatenated with the raw ECG input
-4. the fused input is passed through shared `Conv1D` layers
-5. a shared `BiLSTM` models temporal dependencies
-6. a classifier produces the AMI logit
+- `--weighted-sampling`
+- `--loss-name bce`
+- `--dropout 0.3`
+- `--epochs 25`
+- `--run-name my_run`
 
-So the model is genuinely early fusion, because the modalities are merged before the shared temporal modeling is complete.
+Artifacts are written to either:
+
+- `early_fusion/artifacts/...`
+- `early_fusion/artifacts/runs/<run-name>/...`
 
 ### Late fusion
 
-Implemented in `late_fusion/model.py`.
-
-The late-fusion design is:
-
-1. ECG branch processes only ECG using `Conv1D + BiLSTM`
-2. clinical branch processes only tabular features using an MLP
-3. each branch produces its own logit
-4. a small fusion head combines the branch outputs at the end
-
-That gives a clean research comparison where the main difference is the **fusion stage**.
-
----
-
-## Repository flow
-
-```text
-Train model(s)
-    -> Save best weights and metrics
-    -> Run store_predictions.py
-    -> Evaluate all registered models on the same held-out test set
-    -> Pick the best model by metric
-    -> Generate explainability outputs
-    -> Store predictions and reasoning in SQLite
-    -> Serve through api.py
+```powershell
+python -m late_fusion.train --auto-continue
 ```
 
----
+Common options:
 
-## Project structure
+- `--weighted-sampling`
+- `--loss-name bce`
+- `--dropout 0.4`
+- `--epochs 25`
+- `--run-name my_run`
 
-```text
-D:\MINI_PROJECT\
-|-- architecture_summary.md
-|-- walkthrough.md
-|-- api.py
-|-- explain.py
-|-- store_predictions.py
-|-- early_fusion/
-|   |-- config.py
-|   |-- dataset.py
-|   |-- model.py
-|   |-- losses.py
-|   |-- engine.py
-|   |-- train.py
-|   |-- plots.py
-|   `-- artifacts/
-|       |-- models/
-|       |-- metrics/
-|       `-- plots/
-`-- late_fusion/
+Artifacts are written to either:
+
+- `late_fusion/artifacts/...`
+- `late_fusion/artifacts/runs/<run-name>/...`
+
+## Cross-Validation
+
+### Early fusion CV
+
+```powershell
+python -m early_fusion.cross_validate --run-name ef_cv --weighted-sampling
 ```
 
----
+### Late fusion CV
 
-## Training pipeline
-
-### Early-fusion training
-
-Run:
-
-```bash
-python -m early_fusion.train
+```powershell
+python -m late_fusion.cross_validate --run-name lf_cv --weighted-sampling
 ```
 
-The current training pipeline includes:
+Both CV scripts:
 
-- focal loss for class imbalance
-- tuned learning rate
-- dropout
-- validation threshold search
-- checkpoint saving
-- best-threshold persistence in `metrics.json`
+- keep a fixed held-out test split outside the fold loop
+- run stratified folds on the remaining train pool
+- save fold metrics to CSV and JSON under the run metrics directory
 
-### Important note
+## Artifact Expectations
 
-Because the early-fusion architecture was changed recently, old saved weights may not match the current model definition. Fresh training is the right move for the current version.
+Single training runs save:
 
----
+- best model weights
+- latest checkpoint
+- metrics JSON
+- comparison CSV
+- training plots
 
-## Evaluation and model comparison
+Cross-validation runs save:
 
-The comparison pipeline is handled by [store_predictions.py](/d:/MINI_PROJECT/store_predictions.py:1).
+- `cross_validation.csv`
+- `cross_validation.json`
 
-### What it does
+Named experiments are useful when comparing:
 
-1. loads the held-out test set
-2. loads every registered trained model
-3. evaluates each model on the same test patients
-4. applies that model's saved threshold if available
-5. compares metrics
-6. picks the best model
-7. stores predictions and reasoning in SQLite
+- weighted sampling on vs off
+- focal loss vs BCE
+- different dropout values
+- different epoch budgets
 
-### Current behavior
+## Model Comparison and Prediction Storage
 
-Right now the registry is set up for `early_fusion` and `late_fusion`.
+[store_predictions.py](/abs/path/d:/MINI_PROJECT/store_predictions.py:1) evaluates registered models on the same held-out test set and writes outputs to SQLite.
 
-Once `late_fusion` is trained, it can be compared automatically through the same script.
+Current responsibilities:
 
----
+- load registered model weights
+- evaluate them with their saved threshold when available
+- store patient predictions
+- store per-model metrics
+- store feature-importance and explanation rows
 
-## Explainability pipeline
+Run it with:
 
-Explainability is handled by [explain.py](/d:/MINI_PROJECT/explain.py:1).
+```powershell
+python store_predictions.py
+```
 
-The pipeline computes feature attributions and generates readable reasoning text so the dashboard can show:
+Quick subset:
 
-- predicted AMI risk
-- top contributing clinical factors
-- ranked explanation entries for each patient
+```powershell
+python store_predictions.py --subset 500
+```
 
-This logic is shared and intended to stay model-agnostic as much as possible.
+## Explainability
 
----
+[explain.py](/abs/path/d:/MINI_PROJECT/explain.py:1) computes clinical-feature attribution and converts it into dashboard-friendly reasoning text.
 
-## Database and API
+The explainability flow is currently centered on:
 
-Predictions are stored in a shared SQLite database under the early-fusion artifacts area.
+- clinical contribution ranking
+- natural-language summaries
+- patient-level explanation records
 
-The API in [api.py](/d:/MINI_PROJECT/api.py:1) reads from that database and exposes endpoints for:
+## API and Dashboard Flow
 
-- patient list
-- patient detail
-- ECG waveform
-- explainability insights
-- model metrics
-- comparison results
+[api.py](/abs/path/d:/MINI_PROJECT/api.py:1) serves the SQLite outputs through FastAPI.
 
-Start the API with:
+Start the API:
 
-```bash
+```powershell
 python api.py
 ```
 
@@ -179,65 +159,17 @@ Swagger UI:
 http://localhost:5000/docs
 ```
 
----
+Main endpoint groups:
 
-## Typical workflow
+- patients
+- ECG waveform retrieval
+- explainability insights
+- aggregate metrics
+- comparison outputs
 
-### Train the current early-fusion model
+## Practical Notes
 
-```bash
-python -m early_fusion.train
-```
-
-### Store predictions and build the database
-
-```bash
-python store_predictions.py
-```
-
-Quick subset run:
-
-```bash
-python store_predictions.py --subset 500
-```
-
-### Start the API
-
-```bash
-python api.py
-```
-
----
-
-## Planned late-fusion workflow
-
-After `late_fusion/` is trained:
-
-```bash
-python -m late_fusion.train
-python store_predictions.py
-python api.py
-```
-
-At that point, `store_predictions.py` should compare both fusion strategies on the same test set and pick the stronger one automatically.
-
----
-
-## How this fits the research project
-
-The repo is now organized around a defensible comparison:
-
-- **Early fusion** asks whether joint multimodal temporal learning helps when clinical context is injected before shared CNN and BiLSTM processing finishes.
-- **Late fusion** asks whether independent modality reasoning followed by final decision fusion works better.
-
-Using `BiLSTM` in both models keeps the comparison fairer, because the main experimental variable becomes the fusion strategy instead of one model simply having a stronger ECG sequence encoder.
-
----
-
-## Where to read next
-
-- Architecture details: [architecture_summary.md](/d:/MINI_PROJECT/architecture_summary.md:1)
-- Early-fusion model: [early_fusion/model.py](/d:/MINI_PROJECT/early_fusion/model.py:1)
-- Training loop: [early_fusion/train.py](/d:/MINI_PROJECT/early_fusion/train.py:1)
-- Model comparison and DB storage: [store_predictions.py](/d:/MINI_PROJECT/store_predictions.py:1)
-- API: [api.py](/d:/MINI_PROJECT/api.py:1)
+- Single-run training is resumable because checkpoints are saved after every epoch.
+- Cross-validation is intended for cleaner experiment comparison than one-off runs.
+- Existing artifact files may belong to older checkpoints or earlier architectures.
+- If a saved checkpoint no longer matches the current model definition, the training scripts are designed to fall back to a fresh run.

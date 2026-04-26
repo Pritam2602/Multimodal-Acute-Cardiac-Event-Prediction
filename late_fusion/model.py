@@ -5,7 +5,7 @@ from .config import ECG_LEADS, ECG_LENGTH, NUM_CLINICAL_FEATURES, DROPOUT_RATE
 
 
 class ECGBranch(nn.Module):
-    """ECG-only encoder that produces a branch-level AMI logit."""
+    """ECG-only encoder that produces a dense embedding and branch logit."""
 
     def __init__(self, n_leads: int, ecg_length: int, dropout: float):
         super().__init__()
@@ -38,6 +38,12 @@ class ECGBranch(nn.Module):
             bidirectional=True,
         )
 
+        self.attn_score = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.Tanh(),
+            nn.Linear(64, 1),
+        )
+
         self.encoder_head = nn.Sequential(
             nn.Linear(128, 128),
             nn.ReLU(inplace=True),
@@ -49,13 +55,15 @@ class ECGBranch(nn.Module):
         x = self.conv_block(ecg)
         x = x.transpose(1, 2)
         x, _ = self.bilstm(x)
-        x = x[:, -1, :]
-        features = self.encoder_head(x)
-        return self.logit_head(features).squeeze(-1)
+        weights = torch.softmax(self.attn_score(x), dim=1)
+        pooled = (x * weights).sum(dim=1)
+        features = self.encoder_head(pooled)
+        logit = self.logit_head(features).squeeze(-1)
+        return features, logit
 
 
 class ClinicalBranch(nn.Module):
-    """Clinical-only MLP that produces a branch-level AMI logit."""
+    """Clinical-only MLP that produces a dense embedding and branch logit."""
 
     def __init__(self, n_clinical: int, dropout: float):
         super().__init__()
@@ -66,22 +74,22 @@ class ClinicalBranch(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(128, 64),
             nn.ReLU(inplace=True),
-            nn.Linear(64, 32),
-            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
         )
-        self.logit_head = nn.Linear(32, 1)
+        self.logit_head = nn.Linear(64, 1)
 
     def forward(self, clinical):
         features = self.encoder(clinical)
-        return self.logit_head(features).squeeze(-1)
+        logit = self.logit_head(features).squeeze(-1)
+        return features, logit
 
 
 class LateFusionModel(nn.Module):
     """
     Late-fusion AMI model.
 
-    ECG and clinical inputs are processed independently into branch-level
-    logits. The final prediction is made from the two decision signals.
+    ECG and clinical inputs are processed into learned branch embeddings.
+    The final prediction is made from both embeddings plus branch logits.
     """
 
     def __init__(
@@ -104,16 +112,27 @@ class LateFusionModel(nn.Module):
         )
 
         self.fusion_head = nn.Sequential(
-            nn.Linear(2, 8),
+            nn.Linear(128 + 64 + 2, 128),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
-            nn.Linear(8, 1),
+            nn.Linear(128, 64),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
         )
 
     def forward(self, ecg, clinical):
-        ecg_logit = self.ecg_branch(ecg)
-        clinical_logit = self.clinical_branch(clinical)
+        ecg_features, ecg_logit = self.ecg_branch(ecg)
+        clinical_features, clinical_logit = self.clinical_branch(clinical)
 
-        branch_logits = torch.stack([ecg_logit, clinical_logit], dim=1)
-        final_logit = self.fusion_head(branch_logits).squeeze(-1)
+        fusion_features = torch.cat(
+            [
+                ecg_features,
+                clinical_features,
+                ecg_logit.unsqueeze(1),
+                clinical_logit.unsqueeze(1),
+            ],
+            dim=1,
+        )
+        final_logit = self.fusion_head(fusion_features).squeeze(-1)
         return final_logit

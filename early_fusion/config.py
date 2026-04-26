@@ -63,6 +63,8 @@ BATCH_SIZE    = 64
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY  = 1e-4
 NUM_EPOCHS    = 25
+EARLY_STOPPING_PATIENCE = 5
+EARLY_STOPPING_MIN_DELTA = 1e-4
 VAL_SPLIT     = 0.2
 TEST_SPLIT    = 0.15   # held-out test set for frontend / evaluation
 DROPOUT_RATE  = 0.3
@@ -70,8 +72,13 @@ DEFAULT_THRESHOLD = 0.35
 THRESHOLD_SEARCH_MIN = 0.10
 THRESHOLD_SEARCH_MAX = 0.90
 THRESHOLD_SEARCH_STEPS = 50
+LOSS_NAME = "focal"
 FOCAL_LOSS_ALPHA = 1.0
 FOCAL_LOSS_GAMMA = 2.0
+AUG_SCALE_MIN = 0.9
+AUG_SCALE_MAX = 1.1
+AUG_NOISE_STD = 0.02
+AUG_SHIFT_MAX = 100
 # With memmap-backed loading, each worker just reads a single (12, 5000)
 # slice from the memory-mapped file. This is much lighter than the old wfdb
 # loading and doesn't exhaust shared-memory limits on Windows.

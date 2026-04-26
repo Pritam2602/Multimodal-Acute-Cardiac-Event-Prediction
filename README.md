@@ -1,90 +1,215 @@
-# 🫀 Multimodal Acute Myocardial Infarction (AMI) Prediction
+# Multimodal Acute Myocardial Infarction Prediction
 
-## 📌 Overview
-This project focuses on predicting **Acute Myocardial Infarction (AMI)** using a **multimodal deep learning approach** that combines:
+This repository predicts Acute Myocardial Infarction (AMI) from two modalities:
 
-- 📈 **Raw ECG signals**
-- 🧾 **Clinical data (Electronic Health Records - EHR)**
+- raw 12-lead ECG waveforms
+- structured clinical EHR features
 
-By integrating both physiological and biochemical information, the system aims to improve the accuracy and reliability of heart attack prediction.
+The codebase now supports two training pipelines:
 
----
+- `early_fusion/`: injects clinical context into the ECG stream before shared temporal modeling
+- `late_fusion/`: learns ECG and clinical embeddings separately, then fuses the embeddings plus branch logits
 
-## 🚀 Key Features
+## Repository Layout
 
-- ✅ Multimodal learning (ECG + EHR)
-- ✅ Temporal alignment of clinical data
-- ✅ Missing value handling with indicators
-- ✅ Early Fusion and Late Fusion model comparison
-- ✅ AMI label generation using ICD codes
-- ✅ PyTorch-based deep learning models
+```text
+.
+|-- README.md
+|-- architecture_summary.md
+|-- walkthrough.md
+|-- PROJECT_FILE_DESCRIPTIONS.md
+|-- api.py
+|-- explain.py
+|-- store_predictions.py
+|-- early_fusion/
+|   |-- config.py
+|   |-- dataset.py
+|   |-- model.py
+|   |-- losses.py
+|   |-- engine.py
+|   |-- train.py
+|   |-- cross_validate.py
+|   |-- plots.py
+|   `-- artifacts/
+`-- late_fusion/
+    |-- config.py
+    |-- dataset.py
+    |-- model.py
+    |-- losses.py
+    |-- engine.py
+    |-- train.py
+    |-- cross_validate.py
+    |-- plots.py
+    `-- artifacts/
+```
 
----
+## Data and Modeling Summary
 
-## 🧠 Methodology
+The project uses:
 
-1. **Data Collection**
-   - MIMIC-IV dataset (clinical data)
-   - MIMIC-IV-ECG / PhysioNet (ECG signals)
+- ECG input shape `(12, 5000)`
+- 24 structured clinical features
+- AMI as a binary target
+- PyTorch for model training
+- validation-threshold tuning for F1-aware classification
 
-2. **Data Preprocessing**
-   - Handle missing values using median imputation
-   - Create missing indicator features
-   - Encode categorical variables
+Shared modeling ideas:
 
-3. **Temporal Feature Engineering**
-   - Use only clinical data recorded **before ECG time**
-   - Extract latest values (`_last`) for each feature
+- Conv1D layers for local ECG morphology
+- BiLSTM sequence modeling for ECG time structure
+- class-imbalance handling through weighted BCE or focal loss
+- optional weighted sampling in the training loader
 
-4. **ECG Processing**
-   - Load signals using WFDB
-   - Normalize and fix signal length
+## Early Fusion
 
-5. **Label Generation**
-   - AMI labels derived using ICD diagnosis codes
+The early-fusion model is implemented in [early_fusion/model.py](/abs/path/d:/MINI_PROJECT/early_fusion/model.py:1).
 
-6. **Model Development**
-   - **Early Fusion:** Combine ECG + EHR at input level
-   - **Late Fusion:** Process ECG and EHR separately, then combine prediction signals
+High-level flow:
 
-7. **Evaluation Metrics**
-   - Accuracy
-   - Precision
-   - Recall (important for AMI)
-   - F1-score
----
+```text
+Clinical features
+-> projector
+-> broadcast across ECG time axis
 
-## 🏗️ Model Architecture
+ECG waveform
+-> concatenate with projected clinical channels
+-> shared Conv1D stack
+-> shared BiLSTM
+-> classifier
+-> AMI logit
+```
 
-### 🔹 Early Fusion
+Training entrypoint:
 
-ECG → Feature Vector  
-EHR → Feature Vector  
-→ Concatenation → Dense Layers → Output (AMI)
+```powershell
+python -m early_fusion.train
+```
 
----
+Cross-validation entrypoint:
 
-### 🔹 Late Fusion
+```powershell
+python -m early_fusion.cross_validate --run-name crossval
+```
 
-ECG → CNN → Embedding  
-EHR → Dense → Embedding  
-→ Concatenation → Dense Layers → Output (AMI)---
+Useful training flags:
 
-Implemented under `late_fusion/`.
+- `--weighted-sampling`
+- `--loss-name {focal,bce}`
+- `--dropout`
+- `--epochs`
+- `--learning-rate`
+- `--weight-decay`
+- `--run-name`
+- `--auto-continue`
 
-## Training Workflow
+## Late Fusion
 
-- The training script now saves a resumable checkpoint after every epoch at early_fusion/artifacts/models/latest_checkpoint.pth.
-- The best validation-F1 model is saved at early_fusion/artifacts/models/early_fusion_model.pth.
-- After each epoch, the script asks whether it should continue to the next epoch.
-- If you stop and rerun the command later, it resumes from the next unfinished epoch automatically.
+The late-fusion model is implemented in [late_fusion/model.py](/abs/path/d:/MINI_PROJECT/late_fusion/model.py:1).
 
-Late-fusion training mirrors the same workflow:
+Current high-level flow:
 
-```bash
+```text
+ECG branch
+-> Conv1D stack
+-> BiLSTM
+-> attention pooling
+-> ECG embedding
+-> ECG branch logit
+
+Clinical branch
+-> MLP
+-> clinical embedding
+-> clinical branch logit
+
+Fusion head
+-> concatenate ECG embedding, clinical embedding, ECG logit, clinical logit
+-> MLP fusion head
+-> final AMI logit
+```
+
+This is stronger than the older two-scalar-logit fusion design because the final head sees both learned embeddings and branch-level decision signals.
+
+Training entrypoint:
+
+```powershell
 python -m late_fusion.train
 ```
 
-- The late-fusion checkpoint is saved at `late_fusion/artifacts/models/latest_checkpoint.pth`.
-- The best late-fusion model is saved at `late_fusion/artifacts/models/late_fusion_model.pth`.
+Cross-validation entrypoint:
 
+```powershell
+python -m late_fusion.cross_validate --run-name crossval
+```
+
+Useful training flags:
+
+- `--weighted-sampling`
+- `--loss-name {focal,bce}`
+- `--dropout`
+- `--epochs`
+- `--learning-rate`
+- `--run-name`
+- `--auto-continue`
+
+## Artifacts
+
+Single training runs save artifacts under each model package:
+
+- `artifacts/models/`
+- `artifacts/metrics/`
+- `artifacts/plots/`
+
+Named runs use:
+
+- `artifacts/runs/<run-name>/models/`
+- `artifacts/runs/<run-name>/metrics/`
+- `artifacts/runs/<run-name>/plots/`
+
+Typical outputs include:
+
+- best-model weights
+- latest checkpoint
+- metrics JSON
+- comparison CSV
+- training and evaluation plots
+
+## Example Commands
+
+Train early fusion with weighted sampling:
+
+```powershell
+python -m early_fusion.train --run-name ef_ws --weighted-sampling --auto-continue
+```
+
+Train late fusion with BCE and custom dropout:
+
+```powershell
+python -m late_fusion.train --run-name lf_bce --loss-name bce --dropout 0.3 --auto-continue
+```
+
+Cross-validate both models:
+
+```powershell
+python -m early_fusion.cross_validate --run-name ef_cv --weighted-sampling
+python -m late_fusion.cross_validate --run-name lf_cv --weighted-sampling
+```
+
+## Evaluation and Serving
+
+The repo also contains:
+
+- [store_predictions.py](/abs/path/d:/MINI_PROJECT/store_predictions.py:1) for evaluating registered models and writing patient-level outputs into SQLite
+- [explain.py](/abs/path/d:/MINI_PROJECT/explain.py:1) for clinical-feature attribution and reasoning text
+- [api.py](/abs/path/d:/MINI_PROJECT/api.py:1) for serving dashboard-friendly endpoints
+
+Run the API with:
+
+```powershell
+python api.py
+```
+
+## Notes
+
+- Full training was not automatically run as part of recent code edits.
+- Existing artifact files may reflect earlier experiments rather than the latest code path.
+- Some support scripts still assume early-fusion-centered artifact locations, so model-comparison and serving flows should be checked after major architecture changes.

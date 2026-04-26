@@ -1,295 +1,156 @@
-# Multimodal AMI Prediction - Architecture Summary
+# Multimodal AMI Prediction Architecture Summary
 
-## Overview
+This document summarizes the current model design for both fusion strategies in the repository.
 
-This project predicts **Acute Myocardial Infarction (AMI)** using two complementary modalities:
+## Task Definition
 
-- **12-lead ECG waveforms** with shape `(12, 5000)`
-- **Clinical EHR features** with 24 structured inputs
+The project predicts binary AMI status from:
 
-The project is organized around a fair comparison between two multimodal strategies:
+- ECG waveform input with shape `(12, 5000)`
+- 24 structured clinical features
 
-- **Early fusion**: merge modalities before shared temporal feature learning is complete
-- **Late fusion**: keep modality branches separate and combine them only near the final decision
+The main research comparison is the fusion stage:
 
-This document is the main architecture reference for the repository.
+- early fusion: combine modalities before shared temporal modeling is complete
+- late fusion: keep modality branches separate until the prediction head
 
----
+## Early Fusion
 
-## 1. Early Fusion
+Source: [early_fusion/model.py](/abs/path/d:/MINI_PROJECT/early_fusion/model.py:1)
 
-File: `early_fusion/model.py`
-
-### Current idea
-
-The early-fusion model injects clinical information into the ECG processing stream **before** the shared CNN and BiLSTM finish learning the multimodal representation.
-
-### Architecture
+### Current design
 
 ```text
-Clinical Features (24,)
-    -> Linear(24 -> 64) -> ReLU -> Dropout
-    -> Linear(64 -> clinical_channels) -> ReLU
-    -> Expand across ECG time axis
+Clinical features (24,)
+-> Linear -> ReLU -> Dropout
+-> Linear -> ReLU
+-> projected clinical channels
+-> repeat across ECG time axis
 
-Raw ECG (12, 5000)
-    -> Concatenate with projected clinical channels
-    -> Shared Conv1D(12+clinical_channels -> 32) -> BN -> ReLU -> MaxPool
-    -> Shared Conv1D(32 -> 64) -> BN -> ReLU -> MaxPool
-    -> Shared Conv1D(64 -> 128) -> BN -> ReLU -> MaxPool
-    -> BiLSTM(hidden=64, bidirectional=True)
-    -> Dense(128 -> 256) -> ReLU -> Dropout
-    -> Dense(256 -> 128) -> ReLU
-    -> Classifier(128 -> 64 -> 1)
+ECG waveform (12, 5000)
+-> concatenate with projected clinical channels
+-> Conv1D block
+-> Conv1D block
+-> Conv1D block
+-> BiLSTM
+-> dense head
+-> final AMI logit
 ```
 
-### Conceptual pipeline
+### Why it is early fusion
+
+Clinical information is injected before the shared Conv1D and BiLSTM stack has finished extracting temporal features. The temporal encoder therefore learns from a fused representation instead of separate modality branches.
+
+### Strengths
+
+- gives the sequence encoder direct access to both modalities
+- can learn ECG-clinical interactions early
+- keeps the final prediction head simple
+
+### Tradeoffs
+
+- harder to separate modality-specific contributions
+- clinical information is forced into a temporal channel representation
+
+## Late Fusion
+
+Source: [late_fusion/model.py](/abs/path/d:/MINI_PROJECT/late_fusion/model.py:1)
+
+### Current design
 
 ```text
-Clinical Features -> Projector -> Temporal Clinical Channels --\
-                                                                +--> Shared CNN -> BiLSTM -> Classifier -> AMI
-Raw ECG --------------------------------------------------------/
+ECG branch
+-> Conv1D stack
+-> BiLSTM
+-> attention pooling
+-> ECG embedding (128)
+-> ECG branch logit
+
+Clinical branch
+-> MLP
+-> clinical embedding (64)
+-> clinical branch logit
+
+Fusion head
+-> concatenate ECG embedding, clinical embedding, ECG logit, clinical logit
+-> MLP fusion head
+-> final AMI logit
 ```
 
-### Why this is early fusion
+### Why it is late fusion
 
-Because the model combines ECG and clinical information **before shared temporal modeling is finished**. The BiLSTM operates on a representation that already contains both modalities.
+The ECG branch and clinical branch learn independently for most of the network. Fusion happens only after each branch has already formed its own representation and branch-level score.
 
-### Key design points
+### What changed from the older design
 
-| Aspect | Current early-fusion choice |
-|---|---|
-| ECG input | Raw ECG plus projected clinical channels |
-| Clinical handling | Projected early into temporal context channels |
-| Shared encoder | Conv1D + BiLSTM |
-| Fusion point | Before shared temporal feature extraction finishes |
-| Main benefit | Learns cross-modal interactions early |
+The current late-fusion model no longer fuses only two scalar logits. It now fuses:
 
----
+- ECG embedding
+- clinical embedding
+- ECG branch logit
+- clinical branch logit
 
-## 2. Late Fusion
+That makes the fusion head substantially more expressive while still preserving a clean late-fusion structure.
 
-File: `late_fusion/model.py`
+### Strengths
 
-### Current idea
+- preserves modality-specific reasoning longer
+- makes the late-fusion comparison fairer against the stronger early-fusion backbone
+- gives the final head richer information than a logits-only design
 
-The late-fusion model keeps ECG and clinical processing separate for most of the network. Each branch learns independently, and fusion happens only near the final prediction stage.
+### Tradeoffs
 
-### Architecture
+- slightly larger decision head
+- still depends on the fusion head to combine modality evidence well
 
-```text
-ECG Branch
-    Raw ECG (12, 5000)
-    -> Conv1D(12 -> 32) -> BN -> ReLU -> MaxPool
-    -> Conv1D(32 -> 64) -> BN -> ReLU -> MaxPool
-    -> Conv1D(64 -> 128) -> BN -> ReLU -> MaxPool
-    -> BiLSTM(hidden=64, bidirectional=True)
-    -> Dense(128 -> 128) -> ReLU -> Dropout
-    -> ECG head -> ECG logit
+## Side-by-Side Comparison
 
-Clinical Branch
-    Clinical Features (24,)
-    -> Linear(24 -> 128) -> ReLU -> Dropout
-    -> Linear(128 -> 64) -> ReLU
-    -> Linear(64 -> 32) -> ReLU
-    -> Clinical head -> Clinical logit
-
-Decision Fusion
-    [ECG logit, Clinical logit]
-    -> Fusion head
-    -> Final AMI logit
-```
-
-### Conceptual pipeline
-
-```text
-ECG -> ECG CNN -> BiLSTM -> ECG Logit --\
-                                         +--> Fusion Head -> Final AMI Prediction
-Clinical -> Clinical Encoder -> Logit --/
-```
-
-### Why this is late fusion
-
-Because the ECG branch and clinical branch each learn and score the sample independently first. The model combines them only at the decision stage.
-
-### Key design points
-
-| Aspect | Proposed late-fusion choice |
-|---|---|
-| ECG input | Raw ECG only |
-| Clinical handling | Independent tabular encoder |
-| ECG encoder | Conv1D + BiLSTM |
-| Fusion point | After branch-level logits |
-| Main benefit | Preserves modality-specific reasoning |
-
----
-
-## 3. Early Fusion vs Late Fusion
-
-### Core difference
-
-**Early fusion**
-
-```text
-Merge modalities first -> shared multimodal feature learning -> one classifier
-```
-
-**Late fusion**
-
-```text
-Learn each modality separately -> make branch-level decisions -> combine at the end
-```
-
-### Comparison table
-
-| Aspect | Early Fusion | Late Fusion |
+| Aspect | Early fusion | Late fusion |
 |---|---|---|
-| Fusion point | Before shared feature extraction is complete | After branch-level prediction signals |
-| ECG input | ECG plus projected clinical channels | ECG only |
-| Clinical input | Injected early into sequence representation | Kept in its own MLP branch |
-| ECG encoder | Shared Conv1D + BiLSTM on fused input | Conv1D + BiLSTM on ECG only |
-| Clinical encoder | Small projector only | Full independent encoder |
-| Joint learning | Happens early | Happens near the output |
-| Interpretability | Harder to isolate modality effect | Easier to inspect branch contributions |
-| Research question | Does joint multimodal temporal learning help? | Does independent reasoning plus decision fusion help? |
+| Fusion point | Before shared temporal modeling finishes | After branch embeddings and branch logits are formed |
+| ECG encoder | Shared fused encoder | ECG-only encoder |
+| Clinical encoder | Small projector into temporal channels | Independent MLP branch |
+| Joint representation | Learned early | Learned near the output |
+| Interpretability | Lower modality separation | Better modality separation |
 
-### Why BiLSTM is used in both
+## Training and Evaluation Setup
 
-BiLSTM is useful because ECG is a temporal signal:
+Both pipelines support:
 
-- Conv1D layers capture local waveform morphology
-- BiLSTM captures longer-range sequential dependencies
+- train/validation splitting from the same prepared dataset style
+- threshold tuning on validation predictions
+- focal loss or BCE
+- optional weighted sampling
+- resumable single-run training
+- cross-validation entrypoints
 
-Using BiLSTM in both architectures makes the experiment fairer. The main variable becomes the **fusion strategy**, not whether one model has a stronger ECG backbone.
+Entrypoints:
 
----
+- [early_fusion/train.py](/abs/path/d:/MINI_PROJECT/early_fusion/train.py:1)
+- [early_fusion/cross_validate.py](/abs/path/d:/MINI_PROJECT/early_fusion/cross_validate.py:1)
+- [late_fusion/train.py](/abs/path/d:/MINI_PROJECT/late_fusion/train.py:1)
+- [late_fusion/cross_validate.py](/abs/path/d:/MINI_PROJECT/late_fusion/cross_validate.py:1)
 
-## 4. Data Pipeline
+## Fair Comparison Guidance
 
-```text
-MIMIC-IV Parquet
-    -> Stage 1 split: train_pool + test_set
-    -> Stage 2 split: train + val
-    -> Standardization fitted on train_pool only
-    -> ECG cache on disk
-    -> Lazy loading during training
-    -> Held-out test set stored for evaluation and frontend serving
-```
+For a meaningful early-vs-late comparison, keep these aligned:
 
-### Notes
+- same train/test split policy
+- same preprocessing inputs
+- same loss family when comparing
+- same threshold-selection logic
+- same evaluation metrics
+- similar epoch budget and regularization budget
 
-- ECG waveforms are cached locally for efficient reuse
-- Clinical features are standardized without leaking test information
-- The same data split should be used for both fusion strategies
+## Recommended Metrics
 
----
+Primary metrics used in the codebase:
 
-## 5. Training Setup
-
-The current training pipeline includes:
-
-- focal loss for class imbalance
-- tuned learning rate
-- threshold search on validation
-- best-threshold persistence in metrics
-- checkpoint resume handling
-
-### Fair comparison rules
-
-For a valid early-vs-late comparison, both models should use:
-
-1. the same train/validation/test split
-2. the same preprocessing
-3. the same optimizer and learning-rate policy
-4. the same threshold tuning strategy
-5. the same evaluation metrics
-
-### Recommended metrics
-
-- Accuracy
-- Precision
-- Recall
-- F1-score
+- F1
 - ROC-AUC
-- PR-AUC
+- average precision
+- accuracy
+- precision
+- recall
 
----
-
-## 6. Repository Structure
-
-### Current early-fusion module
-
-```text
-early_fusion/
-    config.py
-    dataset.py
-    model.py
-    losses.py
-    engine.py
-    train.py
-    plots.py
-    artifacts/
-```
-
-### Proposed late-fusion module
-
-```text
-late_fusion/
-    __init__.py
-    config.py
-    dataset.py
-    model.py
-    engine.py
-    train.py
-    artifacts/
-```
-
-Shared root-level infrastructure:
-
-| File | Purpose |
-|---|---|
-| `store_predictions.py` | Evaluates models on the same test set and stores outputs |
-| `explain.py` | Attribution and reasoning logic |
-| `api.py` | FastAPI layer for the dashboard |
-
----
-
-## 7. Frontend / API Context
-
-The dashboard and API are model-agnostic. Once a model writes predictions to the database, the frontend reads them through shared endpoints.
-
-### Main API endpoints
-
-| Endpoint | Description |
-|---|---|
-| `GET /api/patients` | Paginated patient list |
-| `GET /api/patients/{id}` | Full patient record and prediction |
-| `GET /api/patients/{id}/ecg` | 12-lead waveform |
-| `GET /api/patients/{id}/insights` | Explainability output |
-| `GET /api/metrics` | Aggregate performance |
-| `GET /api/stats` | Dashboard summary |
-| `GET /api/comparison` | Model comparison output |
-
----
-
-## 8. Recommended Late-Fusion Implementation
-
-The cleanest late-fusion experiment for this project is:
-
-- ECG branch: `Conv1D + BiLSTM + ECG head`
-- Clinical branch: `MLP + clinical head`
-- Final fusion: concatenate logits and pass through a small fusion head
-
-That gives the clearest contrast with the current early-fusion model, where clinical information is injected before the shared CNN and BiLSTM.
-
----
-
-## 9. Report-Ready Wording
-
-You can use this explanation in the report:
-
-> The early-fusion model combines ECG and clinical information before the shared temporal feature extractor completes multimodal representation learning. In contrast, the late-fusion model processes ECG and clinical data independently through separate branches and combines their prediction signals only at the final decision stage.
-
-And for the sequence modeling:
-
-> In both architectures, stacked convolutional layers followed by a BiLSTM are used to capture local waveform morphology and longer-range sequential dependencies. The difference lies in the fusion stage: in early fusion the BiLSTM operates on a jointly fused multimodal representation, whereas in late fusion it operates only on the ECG branch before decision-level fusion.
+Because AMI detection is imbalanced and clinically recall-sensitive, F1 and average precision are usually more informative than accuracy alone.

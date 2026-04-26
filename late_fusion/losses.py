@@ -21,3 +21,15 @@ class FocalLoss(nn.Module):
         pt = torch.exp(-bce)
         loss = self.alpha * (1 - pt).pow(self.gamma) * bce
         return loss.mean()
+
+
+def build_loss(loss_name: str, pos_weight=None, alpha: float = 1.0, gamma: float = 2.0):
+    loss_name = loss_name.lower().strip()
+
+    if loss_name == "focal":
+        return FocalLoss(alpha=alpha, gamma=gamma, pos_weight=pos_weight)
+
+    if loss_name == "bce":
+        return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    raise ValueError(f"Unsupported loss_name='{loss_name}'. Expected 'focal' or 'bce'.")

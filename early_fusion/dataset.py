@@ -15,7 +15,7 @@ import boto3
 import wfdb
 from pathlib import Path
 from dotenv import load_dotenv
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,6 +24,7 @@ from .config import (
     DATASET_PATH, CLINICAL_FEATURES, TARGET_COLUMN,
     ECG_LEADS, ECG_LENGTH, BATCH_SIZE, VAL_SPLIT, TEST_SPLIT, SEED,
     PROJECT_ROOT, NUM_WORKERS, VAL_NUM_WORKERS, PREFETCH_FACTOR,
+    AUG_SCALE_MIN, AUG_SCALE_MAX, AUG_NOISE_STD, AUG_SHIFT_MAX,
 )
 
 # ── Load .env from project root ──────────────────────────────────────────────
@@ -205,15 +206,15 @@ def _augment_ecg(ecg: np.ndarray) -> np.ndarray:
     ecg : np.ndarray of same shape, augmented
     """
     # 1. Random amplitude scaling
-    scale = np.random.uniform(0.9, 1.1)
+    scale = np.random.uniform(AUG_SCALE_MIN, AUG_SCALE_MAX)
     ecg = ecg * scale
 
     # 2. Additive Gaussian noise
-    noise = np.random.normal(0, 0.02, ecg.shape).astype(np.float32)
+    noise = np.random.normal(0, AUG_NOISE_STD, ecg.shape).astype(np.float32)
     ecg = ecg + noise
 
     # 3. Random temporal shift (wrap-around)
-    shift = np.random.randint(-100, 101)
+    shift = np.random.randint(-AUG_SHIFT_MAX, AUG_SHIFT_MAX + 1)
     if shift != 0:
         ecg = np.roll(ecg, shift, axis=1)
 
@@ -346,7 +347,30 @@ class MultimodalCardiacDataset(Dataset):
         return ecg_tensor, self.clinical_data[idx], self.labels[idx]
 
 
-def _make_dataloader(dataset: Dataset, shuffle: bool, num_workers: int) -> DataLoader:
+def _build_weighted_sampler(labels: np.ndarray) -> WeightedRandomSampler | None:
+    labels = np.asarray(labels, dtype=np.int64)
+    if labels.size == 0:
+        return None
+
+    class_counts = np.bincount(labels, minlength=2).astype(np.float64)
+    if np.any(class_counts == 0):
+        return None
+
+    class_weights = 1.0 / class_counts
+    sample_weights = class_weights[labels]
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(sample_weights, dtype=torch.double),
+        num_samples=len(labels),
+        replacement=True,
+    )
+
+
+def _make_dataloader(
+    dataset: Dataset,
+    shuffle: bool,
+    num_workers: int,
+    sampler: WeightedRandomSampler | None = None,
+) -> DataLoader:
     """
     Build a DataLoader with settings that are stable for the current OS/device.
 
@@ -356,16 +380,170 @@ def _make_dataloader(dataset: Dataset, shuffle: bool, num_workers: int) -> DataL
     """
     loader_kwargs = {
         "batch_size": BATCH_SIZE,
-        "shuffle": shuffle,
+        "shuffle": shuffle if sampler is None else False,
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
     }
+
+    if sampler is not None:
+        loader_kwargs["sampler"] = sampler
 
     if num_workers > 0:
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = PREFETCH_FACTOR
 
     return DataLoader(dataset, **loader_kwargs)
+
+
+def prepare_full_dataset(subset: int = None):
+    """
+    Load, clean, and cache the full dataset once for reuse across splits.
+    """
+    print(f"[DATA] Loading: {DATASET_PATH}")
+    df = pd.read_parquet(DATASET_PATH)
+    print(f"[DATA] Full dataset: {df.shape[0]:,} rows x {df.shape[1]} cols")
+
+    if subset is not None:
+        df = df.head(subset).copy()
+        print(f"[DATA] Using subset: {len(df):,} samples")
+
+    clinical_df = df[CLINICAL_FEATURES].copy()
+    labels = df[TARGET_COLUMN].values.astype(np.float32)
+    ecg_paths = df["ecg_path"].tolist()
+
+    clinical_df = clinical_df.replace([np.inf, -np.inf], np.nan)
+
+    valid_ranges = {
+        "anchor_age": (0, 120),
+        "Heart_Rate": (20, 250),
+        "Respiratory_Rate": (5, 60),
+        "Troponin_T": (0, 50),
+        "Creatinine": (0.1, 15),
+        "Sodium": (100, 180),
+        "Potassium": (1.5, 10),
+        "PR_interval": (50, 500),
+        "QRS_duration": (40, 300),
+        "QT_interval": (200, 800),
+        "QTc": (200, 800),
+        "P_axis": (-180, 360),
+        "QRS_axis": (-180, 360),
+        "T_axis": (-180, 360),
+        "RR_interval": (200, 3000),
+    }
+    for col, (lo, hi) in valid_ranges.items():
+        if col in clinical_df.columns:
+            mask = (clinical_df[col] < lo) | (clinical_df[col] > hi)
+            clinical_df.loc[mask, col] = np.nan
+
+    clinical_df = clinical_df.fillna(clinical_df.median())
+    clinical_raw = clinical_df.values.astype(np.float32)
+    clinical_raw = np.nan_to_num(clinical_raw, nan=0.0, posinf=0.0, neginf=0.0)
+
+    n_samples = len(labels)
+    print(f"[DATA] Clinical features: {clinical_raw.shape[1]} (cleaned)")
+    print(f"[DATA] AMI prevalence: {labels.mean():.4%}  ({int(labels.sum()):,} / {n_samples:,})")
+
+    local_paths = [_get_local_record_path(p, ECG_CACHE_DIR) for p in ecg_paths]
+    candidate_memmap = _ecg_memmap_path(n_samples)
+    expected_bytes = n_samples * ECG_LEADS * ECG_LENGTH * 4
+
+    if candidate_memmap.exists() and candidate_memmap.stat().st_size == expected_bytes:
+        print("[ECG] Memmap cache valid, skipping individual file checks")
+        ecg_memmap_path = candidate_memmap
+        ecg_memmap_shape = (n_samples, ECG_LEADS, ECG_LENGTH)
+    else:
+        download_all_ecgs(ecg_paths)
+
+        valid_mask = np.array([_is_cached(p) for p in local_paths])
+        if not valid_mask.all():
+            n_before = n_samples
+            valid_indices = np.where(valid_mask)[0]
+            local_paths = [local_paths[i] for i in valid_indices]
+            clinical_raw = clinical_raw[valid_mask]
+            labels = labels[valid_mask]
+            df = df.iloc[valid_indices].reset_index(drop=True)
+            n_samples = len(labels)
+            print(f"[DATA] Filtered: {n_before:,} -> {n_samples:,} (removed {n_before - n_samples:,} failed)")
+
+        ecg_memmap_path, ecg_memmap_shape = _build_ecg_memmap(local_paths)
+
+    return {
+        "df": df,
+        "clinical_raw": clinical_raw,
+        "labels": labels,
+        "local_paths": local_paths,
+        "ecg_memmap_path": ecg_memmap_path,
+        "ecg_memmap_shape": ecg_memmap_shape,
+    }
+
+
+def make_split_dataloaders(
+    prepared: dict,
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    train_num_workers: int | None = None,
+    val_num_workers: int | None = None,
+    augment_train: bool = True,
+    weighted_sampling: bool = False,
+):
+    """
+    Standardize clinical features on the training indices and build loaders.
+    """
+    clinical_raw = prepared["clinical_raw"]
+    labels = prepared["labels"]
+
+    train_idx = np.asarray(train_idx)
+    val_idx = np.asarray(val_idx)
+
+    train_clinical = clinical_raw[train_idx]
+    col_mean = train_clinical.mean(axis=0, keepdims=True)
+    col_std = train_clinical.std(axis=0, keepdims=True) + 1e-8
+    clinical_standardized = (clinical_raw - col_mean) / col_std
+
+    train_ds = MultimodalCardiacDataset(
+        prepared["ecg_memmap_path"],
+        prepared["ecg_memmap_shape"],
+        train_idx,
+        clinical_standardized[train_idx],
+        labels[train_idx],
+        augment=augment_train,
+    )
+    val_ds = MultimodalCardiacDataset(
+        prepared["ecg_memmap_path"],
+        prepared["ecg_memmap_shape"],
+        val_idx,
+        clinical_standardized[val_idx],
+        labels[val_idx],
+        augment=False,
+    )
+
+    effective_train_workers = NUM_WORKERS if train_num_workers is None else train_num_workers
+    effective_val_workers = VAL_NUM_WORKERS if val_num_workers is None else val_num_workers
+
+    train_sampler = _build_weighted_sampler(labels[train_idx]) if weighted_sampling else None
+    train_loader = _make_dataloader(
+        train_ds,
+        shuffle=True,
+        num_workers=effective_train_workers,
+        sampler=train_sampler,
+    )
+    val_loader = _make_dataloader(val_ds, shuffle=False, num_workers=effective_val_workers)
+
+    n_pos = labels[train_idx].sum()
+    n_neg = len(train_idx) - n_pos
+    pos_weight = torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32)
+
+    return {
+        "train_loader": train_loader,
+        "val_loader": val_loader,
+        "pos_weight": pos_weight,
+        "clinical_standardized": clinical_standardized,
+        "col_mean": col_mean,
+        "col_std": col_std,
+        "train_workers": effective_train_workers,
+        "val_workers": effective_val_workers,
+        "weighted_sampling": weighted_sampling,
+    }
 
 
 # ==========================================
@@ -376,6 +554,7 @@ def load_and_prepare_data(
     subset: int = None,
     train_num_workers: int | None = None,
     val_num_workers: int | None = None,
+    weighted_sampling: bool = False,
 ):
     """
     Load preprocessed parquet, download ECGs from S3 (multithreaded),
@@ -556,13 +735,20 @@ def load_and_prepare_data(
     effective_train_workers = NUM_WORKERS if train_num_workers is None else train_num_workers
     effective_val_workers = VAL_NUM_WORKERS if val_num_workers is None else val_num_workers
 
-    train_loader = _make_dataloader(train_ds, shuffle=True, num_workers=effective_train_workers)
+    train_sampler = _build_weighted_sampler(labels[train_idx]) if weighted_sampling else None
+    train_loader = _make_dataloader(
+        train_ds,
+        shuffle=True,
+        num_workers=effective_train_workers,
+        sampler=train_sampler,
+    )
     val_loader = _make_dataloader(val_ds, shuffle=False, num_workers=effective_val_workers)
 
     print(f"[DATA] Stage 2 split: Train={len(train_ds):,}  |  Val={len(val_ds):,}  |  Test={len(test_metadata['test_labels']):,}")
     print(
         f"[DATA] DataLoader config: train_workers={effective_train_workers} | "
         f"val_workers={effective_val_workers} | "
+        f"weighted_sampling={weighted_sampling} | "
         f"pin_memory={torch.cuda.is_available()} | "
         f"prefetch_factor={PREFETCH_FACTOR if effective_train_workers > 0 or effective_val_workers > 0 else 'n/a'}"
     )
