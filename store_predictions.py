@@ -66,7 +66,7 @@ MODEL_REGISTRY = {
             "n_leads":    12,
             "ecg_length": 5000,
             "n_clinical": 24,
-            "dropout":    0.4,
+            "dropout":    0.2,
         },
         "metrics":      "early_fusion/artifacts/metrics/metrics.json",
         "dataset_module": "early_fusion.dataset",
@@ -229,7 +229,7 @@ def load_model(model_name, device):
 # MODEL EVALUATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def evaluate_model(model, test_local_paths, test_clinical, test_labels, device, threshold=0.5):
+def evaluate_model(model, test_metadata, test_clinical, test_labels, device, threshold=0.5):
     """
     Run inference on the test set and compute metrics.
 
@@ -239,8 +239,7 @@ def evaluate_model(model, test_local_paths, test_clinical, test_labels, device, 
     all_probs : np.ndarray — predicted probabilities
     all_preds : np.ndarray — binary predictions
     """
-    from early_fusion.dataset import load_ecg_signal
-    from early_fusion.config import ECG_LEADS, ECG_LENGTH
+    from late_fusion.dataset import load_ecg_from_metadata
 
     model.eval()
     all_probs = []
@@ -248,17 +247,7 @@ def evaluate_model(model, test_local_paths, test_clinical, test_labels, device, 
 
     with torch.no_grad():
         for i in range(len(test_labels)):
-            # Load ECG
-            try:
-                ecg = load_ecg_signal(test_local_paths[i])
-            except Exception:
-                ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
-
-            ecg = np.nan_to_num(ecg, nan=0.0, posinf=0.0, neginf=0.0)
-            lead_mean = ecg.mean(axis=1, keepdims=True)
-            lead_std  = ecg.std(axis=1, keepdims=True) + 1e-8
-            ecg = (ecg - lead_mean) / lead_std
-
+            ecg = load_ecg_from_metadata(i, test_metadata)
             ecg_t = torch.tensor(ecg, dtype=torch.float32).unsqueeze(0).to(device)
             cli_t = torch.tensor(test_clinical[i], dtype=torch.float32).unsqueeze(0).to(device)
 
@@ -312,7 +301,7 @@ def main():
     print(" STEP 1: LOADING DATA")
     print("=" * 70)
 
-    from early_fusion.dataset import load_and_prepare_data
+    from late_fusion.dataset import load_and_prepare_data
     _, _, _, test_metadata = load_and_prepare_data(subset=args.subset)
 
     test_df          = test_metadata["test_df"]
@@ -340,7 +329,7 @@ def main():
 
         print(f"  Evaluating on {n_test:,} test patients ...")
         metrics, probs, preds = evaluate_model(
-            model, test_local_paths, test_clinical, test_labels, DEVICE, threshold=info["threshold"]
+            model, test_metadata, test_clinical, test_labels, DEVICE, threshold=info["threshold"]
         )
 
         results[model_name] = {
@@ -434,22 +423,13 @@ def main():
     best_probs = best["probs"]
     best_preds = best["preds"]
 
-    from early_fusion.dataset import load_ecg_signal
-    from early_fusion.config import ECG_LEADS, ECG_LENGTH
+    from late_fusion.dataset import load_ecg_from_metadata
 
     print(f"\n  Running explainability for {n_test:,} patients ...")
 
     for i in tqdm(range(n_test), desc="Storing predictions"):
         # Load ECG for attribution (needs gradients, can't use no_grad)
-        try:
-            ecg = load_ecg_signal(test_local_paths[i])
-        except Exception:
-            ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
-
-        ecg = np.nan_to_num(ecg, nan=0.0, posinf=0.0, neginf=0.0)
-        lead_mean = ecg.mean(axis=1, keepdims=True)
-        lead_std  = ecg.std(axis=1, keepdims=True) + 1e-8
-        ecg = (ecg - lead_mean) / lead_std
+        ecg = load_ecg_from_metadata(i, test_metadata)
 
         ecg_tensor      = torch.tensor(ecg, dtype=torch.float32).unsqueeze(0)
         clinical_tensor = torch.tensor(test_clinical[i], dtype=torch.float32).unsqueeze(0)

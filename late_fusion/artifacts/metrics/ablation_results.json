@@ -1,0 +1,44 @@
+[
+  {
+    "model": "ecg_only",
+    "params": 154145,
+    "best_epoch": 11,
+    "best_val_f1": 0.34889,
+    "best_threshold": 0.557143,
+    "val_loss": 0.552629,
+    "val_accuracy": 0.213421,
+    "val_precision": 0.211392,
+    "val_recall": 0.99808,
+    "val_f1": 0.34889,
+    "val_auc": 0.50185,
+    "val_average_precision": 0.211936
+  },
+  {
+    "model": "clinical_only",
+    "params": 13569,
+    "best_epoch": 41,
+    "best_val_f1": 0.526413,
+    "best_threshold": 0.638776,
+    "val_loss": 0.425701,
+    "val_accuracy": 0.776631,
+    "val_precision": 0.476538,
+    "val_recall": 0.587949,
+    "val_f1": 0.526413,
+    "val_auc": 0.795819,
+    "val_average_precision": 0.563839
+  },
+  {
+    "model": "fusion",
+    "params": 167843,
+    "best_epoch": 44,
+    "best_val_f1": 0.520753,
+    "best_threshold": 0.622449,
+    "val_loss": 0.59234,
+    "val_accuracy": 0.762723,
+    "val_precision": 0.453986,
+    "val_recall": 0.610545,
+    "val_f1": 0.520753,
+    "val_auc": 0.789735,
+    "val_average_precision": 0.556761
+  }
+]

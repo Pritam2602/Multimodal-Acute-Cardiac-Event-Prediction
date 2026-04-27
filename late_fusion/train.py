@@ -25,12 +25,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from typing import Any
 
 from .config import (
-    SEED, NUM_EPOCHS, LEARNING_RATE,
+    SEED, NUM_EPOCHS, LEARNING_RATE, WEIGHT_DECAY,
     MODELS_DIR, PLOTS_DIR, METRICS_DIR,
     ECG_LEADS, ECG_LENGTH, NUM_CLINICAL_FEATURES, DROPOUT_RATE,
-    DEFAULT_THRESHOLD, FOCAL_LOSS_ALPHA, FOCAL_LOSS_GAMMA,
+    DEFAULT_THRESHOLD, FOCAL_LOSS_ALPHA, FOCAL_LOSS_GAMMA, AMP_ENABLED,
 )
 from .dataset import load_and_prepare_data
 from .engine import train_one_epoch, evaluate
@@ -46,14 +47,20 @@ from .plots import (
     save_roc_curve_plot,
 )
 
+try:
+    GradScaler = torch.amp.GradScaler
+except AttributeError:
+    GradScaler = torch.cuda.amp.GradScaler
+
 
 def seed_everything(seed: int = SEED):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
 
 
 def _build_empty_history() -> dict:
@@ -78,11 +85,13 @@ def _save_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
     optimizer: optim.Optimizer,
+    scheduler: optim.lr_scheduler._LRScheduler,
     epoch: int,
     best_val_f1: float,
     best_threshold: float,
     history: dict,
     args: argparse.Namespace,
+    scaler: Any | None,
 ):
     payload = {
         "model_name": "late_fusion",
@@ -91,12 +100,14 @@ def _save_checkpoint(
         "best_threshold": best_threshold,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
         "history": history,
         "args": vars(args),
         "random_state": random.getstate(),
         "numpy_state": np.random.get_state(),
         "torch_rng_state": torch.get_rng_state(),
         "cuda_rng_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
     }
     torch.save(payload, checkpoint_path)
     print(f"[SAVE] Checkpoint -> {checkpoint_path}")
@@ -106,7 +117,9 @@ def _resume_from_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
     optimizer: optim.Optimizer,
+    scheduler: optim.lr_scheduler._LRScheduler,
     device: torch.device,
+    scaler: Any | None,
 ):
     if not checkpoint_path.exists():
         return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
@@ -120,6 +133,12 @@ def _resume_from_checkpoint(
     try:
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler_state = checkpoint.get("scheduler_state_dict")
+        if scheduler_state is not None:
+            scheduler.load_state_dict(scheduler_state)
+        scaler_state = checkpoint.get("scaler_state_dict")
+        if scaler is not None and scaler_state is not None:
+            scaler.load_state_dict(scaler_state)
     except RuntimeError as exc:
         print(f"[LOAD] Checkpoint incompatible with current model: {exc}")
         print("[LOAD] Starting fresh training run with the updated architecture.")
@@ -151,16 +170,6 @@ def _resume_from_checkpoint(
     print(f"[LOAD] Best Val F1 so far: {best_val_f1:.4f}")
     print(f"[LOAD] Best threshold so far: {best_threshold:.4f}")
     return next_epoch, best_val_f1, best_threshold, history
-
-
-def _should_continue(next_epoch: int, total_epochs: int) -> bool:
-    while True:
-        response = input(f"[PROMPT] Continue to epoch {next_epoch}/{total_epochs}? [Y/n]: ").strip().lower()
-        if response in {"", "y", "yes"}:
-            return True
-        if response in {"n", "no"}:
-            return False
-        print("[PROMPT] Please enter 'y' or 'n'.")
 
 
 def main():
@@ -211,29 +220,36 @@ def main():
         gamma=FOCAL_LOSS_GAMMA,
         pos_weight=pos_weight.to(device),
     )
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=1e-6)
+    use_amp = AMP_ENABLED and device.type == "cuda"
+    try:
+        scaler = GradScaler("cuda", enabled=use_amp)
+    except TypeError:
+        scaler = GradScaler(enabled=use_amp)
 
     checkpoint_path = _latest_checkpoint_path()
     best_model_path = _best_model_path()
     resumed_from_checkpoint = checkpoint_path.exists()
     start_epoch, best_val_f1, best_threshold, history = _resume_from_checkpoint(
-        checkpoint_path, model, optimizer, device
+        checkpoint_path, model, optimizer, scheduler, device, scaler
     )
     active_threshold = best_threshold
 
     print(f"\n{'Epoch':>5} | {'Tr Loss':>8} | {'Val Loss':>8} | "
-          f"{'Tr Acc':>7} | {'Val Acc':>7} | {'Val P':>6} | {'Val R':>6} | {'Val F1':>6} | {'Th':>5}")
-    print("-" * 86)
+          f"{'Tr Acc':>7} | {'Tr F1':>6} | {'Val Acc':>7} | {'Val P':>6} | {'Val R':>6} | {'Val F1':>6} | {'Th':>5}")
+    print("-" * 95)
 
     start_time = time.time()
     completed_epochs = max(start_epoch - 1, 0)
 
     for epoch in range(start_epoch, NUM_EPOCHS + 1):
         train_loss, train_metrics = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, threshold=active_threshold
+            model, train_loader, criterion, optimizer, device,
+            threshold=active_threshold, use_amp=use_amp, scaler=scaler
         )
         val_loss, val_metrics = evaluate(
-            model, val_loader, criterion, device, auto_threshold=True
+            model, val_loader, criterion, device, auto_threshold=True, use_amp=use_amp
         )
         active_threshold = val_metrics["threshold"]
 
@@ -247,7 +263,7 @@ def main():
 
         print(
             f"{epoch:5d} | {train_loss:8.4f} | {val_loss:8.4f} | "
-            f"{train_metrics['accuracy']:7.4f} | {val_metrics['accuracy']:7.4f} | "
+            f"{train_metrics['accuracy']:7.4f} | {train_metrics['f1']:6.4f} | {val_metrics['accuracy']:7.4f} | "
             f"{val_metrics['precision']:6.4f} | {val_metrics['recall']:6.4f} | {val_metrics['f1']:6.4f} | "
             f"{active_threshold:5.2f}"
         )
@@ -262,16 +278,14 @@ def main():
                 " -- best model updated"
             )
 
+        scheduler.step()
         _save_checkpoint(
-            checkpoint_path, model, optimizer, epoch, best_val_f1, best_threshold, history, args
+            checkpoint_path, model, optimizer, scheduler, epoch, best_val_f1,
+            best_threshold, history, args, scaler
         )
 
-        if epoch < NUM_EPOCHS and not _should_continue(epoch + 1, NUM_EPOCHS):
-            print(f"[STOP] Training paused after epoch {epoch}. Rerun the script to resume from epoch {epoch + 1}.")
-            break
-
     elapsed = time.time() - start_time
-    print("-" * 86)
+    print("-" * 95)
     print(
         f"[DONE] Training session finished in {elapsed:.1f}s  |  "
         f"Completed epochs: {completed_epochs} | Best Val F1: {best_val_f1:.4f} | "
@@ -283,10 +297,11 @@ def main():
         print(f"[LOAD] Best model restored from {best_model_path}")
 
     final_val_loss, final_val_metrics, final_val_outputs = evaluate(
-        model, val_loader, criterion, device, threshold=best_threshold, return_outputs=True
+        model, val_loader, criterion, device, threshold=best_threshold,
+        return_outputs=True, use_amp=use_amp
     )
     final_train_loss, final_train_metrics = evaluate(
-        model, train_loader, criterion, device, threshold=best_threshold
+        model, train_loader, criterion, device, threshold=best_threshold, use_amp=use_amp
     )
 
     metrics_payload = {
@@ -303,6 +318,7 @@ def main():
         "epochs_completed": completed_epochs,
         "target_epochs": NUM_EPOCHS,
         "learning_rate": LEARNING_RATE,
+        "weight_decay": WEIGHT_DECAY,
         "loss_name": "FocalLoss",
         "history": {k: [round(v, 6) for v in vals] for k, vals in history.items()},
         "validation_outputs": {

@@ -9,6 +9,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DATASET_PATH = PROJECT_ROOT / "mimic_data" / "final_preprocessed_fusion_dataset.parquet"
+ECG_CACHE_DIR = PROJECT_ROOT / "mimic_data" / "ecg_cache"
+ECG_MEMMAP_DIR = ECG_CACHE_DIR
 
 ARTIFACT_ROOT = PROJECT_ROOT / "late_fusion" / "artifacts"
 MODELS_DIR    = ARTIFACT_ROOT / "models"
@@ -61,22 +63,26 @@ ECG_LENGTH   = 5000  # samples per lead
 # ── Training hyper-parameters ─────────────────────────────────────────────────
 BATCH_SIZE    = 64
 LEARNING_RATE = 3e-4
-NUM_EPOCHS    = 25
-VAL_SPLIT     = 0.2
+WEIGHT_DECAY  = 1e-4
+NUM_EPOCHS    = 45
+VAL_SPLIT     = 0.3
 TEST_SPLIT    = 0.15   # held-out test set for frontend / evaluation
-DROPOUT_RATE  = 0.4
+DROPOUT_RATE  = 0.2
+ECG_AUX_LOSS_WEIGHT = 0.15
+CLINICAL_AUX_LOSS_WEIGHT = 0.15
 DEFAULT_THRESHOLD = 0.35
 THRESHOLD_SEARCH_MIN = 0.10
 THRESHOLD_SEARCH_MAX = 0.90
 THRESHOLD_SEARCH_STEPS = 50
 FOCAL_LOSS_ALPHA = 1.0
 FOCAL_LOSS_GAMMA = 2.0
+AMP_ENABLED = True
 # Windows DataLoader workers use shared file mappings for batch collation.
 # Large ECG tensors can exhaust paging file / shared-memory limits there, so
 # keep train loading modest and validation even lighter by default.
-NUM_WORKERS   = 2 if os.name == "nt" else 12
-VAL_NUM_WORKERS = 0 if os.name == "nt" else 4
-PREFETCH_FACTOR = 1 if os.name == "nt" else 2
+NUM_WORKERS   = 4 if os.name == "nt" else 12
+VAL_NUM_WORKERS = 2 if os.name == "nt" else 4
+PREFETCH_FACTOR = 2
 
 # ── Reproducibility ──────────────────────────────────────────────────────────
 SEED = 42
