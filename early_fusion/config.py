@@ -26,9 +26,16 @@ CLINICAL_FEATURES = [
     "Respiratory_Rate",
     # Lab values
     "Troponin_T",
+    "log1p_Troponin_T",
+    "Troponin_T_positive",
+    "Troponin_T_high",
+    "age_x_log1p_Troponin_T",
     "Creatinine",
+    "Creatinine_high",
     "Sodium",
     "Potassium",
+    "Potassium_low",
+    "Potassium_high",
     # Hospital stay info
     "num_diagnoses",
     "los",
@@ -41,6 +48,14 @@ CLINICAL_FEATURES = [
     "QRS_axis",
     "T_axis",
     "RR_interval",
+    "HR_from_RR_interval",
+    "HR_RR_disagreement",
+    # ECG-machine abnormality flags
+    "QRS_wide",
+    "QTc_prolonged",
+    "PR_prolonged",
+    "QRS_axis_deviation",
+    "T_axis_abnormal",
     # Missingness indicators
     "Troponin_T_missing",
     "Creatinine_missing",
@@ -48,11 +63,20 @@ CLINICAL_FEATURES = [
     "Potassium_missing",
     "Heart_Rate_missing",
     "Respiratory_Rate_missing",
+    # Invalid ECG-machine indicators
+    "PR_interval_invalid",
+    "QRS_duration_invalid",
+    "QT_interval_invalid",
+    "QTc_invalid",
+    "P_axis_invalid",
+    "QRS_axis_invalid",
+    "T_axis_invalid",
+    "RR_interval_invalid",
 ]
 
 TARGET_COLUMN = "AMI"
 
-NUM_CLINICAL_FEATURES = len(CLINICAL_FEATURES)  # 24
+NUM_CLINICAL_FEATURES = len(CLINICAL_FEATURES)
 
 # ── ECG signal settings ──────────────────────────────────────────────────────
 ECG_LEADS    = 12
