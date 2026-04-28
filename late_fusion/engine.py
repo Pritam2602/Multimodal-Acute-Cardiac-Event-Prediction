@@ -17,6 +17,10 @@ from .config import (
 )
 
 
+def _autocast_context(device: torch.device, enabled: bool):
+    return torch.amp.autocast(device_type=device.type, enabled=enabled)
+
+
 def find_best_threshold(labels, probs, threshold_min=THRESHOLD_SEARCH_MIN,
                         threshold_max=THRESHOLD_SEARCH_MAX, steps=THRESHOLD_SEARCH_STEPS):
     labels = np.asarray(labels, dtype=int)
@@ -62,35 +66,53 @@ def _compute_metrics(labels, probs, threshold):
     return metrics, preds
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device,
-                    max_grad_norm=1.0, threshold=DEFAULT_THRESHOLD):
+def train_one_epoch(
+    model,
+    loader,
+    criterion,
+    optimizer,
+    device,
+    max_grad_norm=1.0,
+    threshold=DEFAULT_THRESHOLD,
+    amp_enabled=False,
+    scaler=None,
+):
     model.train()
     running_loss = 0.0
     n_samples = 0
     all_probs, all_labels = [], []
 
     for ecg, clinical, labels in loader:
-        ecg = ecg.to(device)
-        clinical = clinical.to(device)
-        labels = labels.to(device)
+        ecg = ecg.to(device, non_blocking=True)
+        clinical = clinical.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True).float()
 
-        optimizer.zero_grad()
-        logits = model(ecg, clinical)
+        optimizer.zero_grad(set_to_none=True)
+        with _autocast_context(device, amp_enabled):
+            logits = model(ecg, clinical)
+        logits = logits.float()
         loss = criterion(logits, labels)
 
         if torch.isnan(loss):
             continue
 
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-        optimizer.step()
+        if scaler is not None and amp_enabled:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+            optimizer.step()
 
         running_loss += loss.item() * labels.size(0)
         n_samples += labels.size(0)
 
-        probs = torch.sigmoid(logits.detach()).cpu().numpy()
+        probs = torch.sigmoid(logits.detach()).float().cpu().numpy()
         all_probs.extend(probs)
-        all_labels.extend(labels.detach().cpu().numpy())
+        all_labels.extend(labels.detach().float().cpu().numpy())
 
     avg_loss = running_loss / max(n_samples, 1)
     metrics, _ = _compute_metrics(all_labels, all_probs, threshold)
@@ -98,24 +120,34 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
 
 
 @torch.no_grad()
-def evaluate(model, loader, criterion, device, threshold=DEFAULT_THRESHOLD,
-             auto_threshold=False, return_outputs=False):
+def evaluate(
+    model,
+    loader,
+    criterion,
+    device,
+    threshold=DEFAULT_THRESHOLD,
+    auto_threshold=False,
+    return_outputs=False,
+    amp_enabled=False,
+):
     model.eval()
     running_loss = 0.0
     all_probs, all_labels = [], []
 
     for ecg, clinical, labels in loader:
-        ecg = ecg.to(device)
-        clinical = clinical.to(device)
-        labels = labels.to(device)
+        ecg = ecg.to(device, non_blocking=True)
+        clinical = clinical.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True).float()
 
-        logits = model(ecg, clinical)
+        with _autocast_context(device, amp_enabled):
+            logits = model(ecg, clinical)
+        logits = logits.float()
         loss = criterion(logits, labels)
         running_loss += loss.item() * labels.size(0)
 
-        probs = torch.sigmoid(logits).cpu().numpy()
+        probs = torch.sigmoid(logits).float().cpu().numpy()
         all_probs.extend(probs)
-        all_labels.extend(labels.cpu().numpy())
+        all_labels.extend(labels.float().cpu().numpy())
 
     avg_loss = running_loss / len(loader.dataset)
 

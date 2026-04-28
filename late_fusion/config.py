@@ -9,6 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DATASET_PATH = PROJECT_ROOT / "mimic_data" / "final_preprocessed_fusion_dataset.parquet"
+MEMMAP_DIR   = PROJECT_ROOT / "mimic_data" / "memmap"
 
 ARTIFACT_ROOT = PROJECT_ROOT / "late_fusion" / "artifacts"
 MODELS_DIR    = ARTIFACT_ROOT / "models"
@@ -71,12 +72,12 @@ THRESHOLD_SEARCH_MAX = 0.90
 THRESHOLD_SEARCH_STEPS = 50
 FOCAL_LOSS_ALPHA = 1.0
 FOCAL_LOSS_GAMMA = 2.0
-# Windows DataLoader workers use shared file mappings for batch collation.
-# Large ECG tensors can exhaust paging file / shared-memory limits there, so
-# keep train loading modest and validation even lighter by default.
-NUM_WORKERS   = 2 if os.name == "nt" else 12
-VAL_NUM_WORKERS = 0 if os.name == "nt" else 4
-PREFETCH_FACTOR = 1 if os.name == "nt" else 2
+CPU_COUNT = os.cpu_count() or 4
+# Memmap-backed ECG reads are much lighter than per-sample WFDB parsing, so
+# the default worker counts can be higher without overwhelming Windows.
+NUM_WORKERS = min(8, max(2, CPU_COUNT // 2))
+VAL_NUM_WORKERS = min(4, max(1, CPU_COUNT // 4))
+PREFETCH_FACTOR = 2
 
 # ── Reproducibility ──────────────────────────────────────────────────────────
 SEED = 42

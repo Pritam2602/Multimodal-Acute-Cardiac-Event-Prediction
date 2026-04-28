@@ -8,6 +8,7 @@
 # ==========================================
 
 import os
+import hashlib
 import numpy as np
 import pandas as pd
 import torch
@@ -23,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import (
     DATASET_PATH, CLINICAL_FEATURES, TARGET_COLUMN,
     ECG_LEADS, ECG_LENGTH, BATCH_SIZE, VAL_SPLIT, TEST_SPLIT, SEED,
-    PROJECT_ROOT, NUM_WORKERS, VAL_NUM_WORKERS, PREFETCH_FACTOR,
+    PROJECT_ROOT, MEMMAP_DIR, NUM_WORKERS, VAL_NUM_WORKERS, PREFETCH_FACTOR,
 )
 
 # ── Load .env from project root ──────────────────────────────────────────────
@@ -183,6 +184,61 @@ def load_ecg_signal(record_path: str, target_length: int = ECG_LENGTH) -> np.nda
     return signal.astype(np.float32)
 
 
+def _normalize_ecg(ecg: np.ndarray) -> np.ndarray:
+    ecg = np.nan_to_num(ecg, nan=0.0, posinf=0.0, neginf=0.0)
+    lead_mean = ecg.mean(axis=1, keepdims=True)
+    lead_std = ecg.std(axis=1, keepdims=True) + 1e-8
+    return ((ecg - lead_mean) / lead_std).astype(np.float32, copy=False)
+
+
+def _memmap_cache_path(local_paths: list[str]) -> Path:
+    digest = hashlib.sha1(
+        "\n".join(local_paths).encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()[:16]
+    return MEMMAP_DIR / f"late_fusion_ecg_{digest}.npy"
+
+
+def build_ecg_memmap(local_paths: list[str]) -> Path:
+    """
+    Convert the downloaded WFDB records into a reusable read-only memmap.
+
+    This avoids reparsing WFDB files in every DataLoader worker and makes
+    higher worker counts viable on Windows.
+    """
+    MEMMAP_DIR.mkdir(parents=True, exist_ok=True)
+    memmap_path = _memmap_cache_path(local_paths)
+
+    if memmap_path.exists():
+        print(f"[ECG] Reusing memmap cache: {memmap_path}")
+        return memmap_path
+
+    print(f"[ECG] Building memmap cache: {memmap_path}")
+    memmap = np.lib.format.open_memmap(
+        memmap_path,
+        mode="w+",
+        dtype=np.float32,
+        shape=(len(local_paths), ECG_LEADS, ECG_LENGTH),
+    )
+
+    try:
+        for idx, record_path in enumerate(tqdm(local_paths, desc="Caching ECG memmap")):
+            try:
+                ecg = load_ecg_signal(record_path)
+            except Exception:
+                ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
+            memmap[idx] = _normalize_ecg(ecg)
+        memmap.flush()
+    except Exception:
+        del memmap
+        if memmap_path.exists():
+            memmap_path.unlink()
+        raise
+
+    del memmap
+    return memmap_path
+
+
 # ==========================================
 # LAZY-LOADING PYTORCH DATASET
 # ==========================================
@@ -202,27 +258,38 @@ class MultimodalCardiacDataset(Dataset):
     labels        : np.ndarray of shape (N,)
     """
 
-    def __init__(self, ecg_paths: list, clinical_data: np.ndarray, labels: np.ndarray):
-        self.ecg_paths     = ecg_paths
+    def __init__(
+        self,
+        clinical_data: np.ndarray,
+        labels: np.ndarray,
+        ecg_paths: list | None = None,
+        ecg_memmap_path: str | None = None,
+        ecg_indices: np.ndarray | None = None,
+    ):
+        self.ecg_paths = ecg_paths
+        self.ecg_memmap_path = ecg_memmap_path
+        self.ecg_indices = np.arange(len(labels)) if ecg_indices is None else np.asarray(ecg_indices)
+        self._ecg_memmap = None
         self.clinical_data = torch.tensor(clinical_data, dtype=torch.float32)
-        self.labels        = torch.tensor(labels, dtype=torch.float32)
+        self.labels = torch.tensor(labels, dtype=torch.float32)
 
     def __len__(self):
         return len(self.labels)
 
-    def __getitem__(self, idx):
-        # Lazy-load ECG from local cache
-        try:
-            ecg = load_ecg_signal(self.ecg_paths[idx])
-        except Exception:
-            # Return zeros if a record fails to load
-            ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
+    def _get_memmap(self):
+        if self._ecg_memmap is None and self.ecg_memmap_path is not None:
+            self._ecg_memmap = np.load(self.ecg_memmap_path, mmap_mode="r")
+        return self._ecg_memmap
 
-        # Clean NaN/inf and normalize per-lead (z-score)
-        ecg = np.nan_to_num(ecg, nan=0.0, posinf=0.0, neginf=0.0)
-        lead_mean = ecg.mean(axis=1, keepdims=True)
-        lead_std  = ecg.std(axis=1, keepdims=True) + 1e-8
-        ecg = (ecg - lead_mean) / lead_std
+    def __getitem__(self, idx):
+        memmap = self._get_memmap()
+        if memmap is not None:
+            ecg = np.array(memmap[self.ecg_indices[idx]], dtype=np.float32, copy=True)
+        else:
+            try:
+                ecg = _normalize_ecg(load_ecg_signal(self.ecg_paths[idx]))
+            except Exception:
+                ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
 
         ecg_tensor = torch.tensor(ecg, dtype=torch.float32)
         return ecg_tensor, self.clinical_data[idx], self.labels[idx]
@@ -403,14 +470,19 @@ def load_and_prepare_data(
     train_idx = train_pool_idx[train_sub_idx]
     val_idx   = train_pool_idx[val_sub_idx]
 
-    train_paths = [local_paths[i] for i in train_idx]
-    val_paths   = [local_paths[i] for i in val_idx]
+    ecg_memmap_path = build_ecg_memmap(local_paths)
 
     train_ds = MultimodalCardiacDataset(
-        train_paths, clinical_standardized[train_idx], labels[train_idx]
+        clinical_standardized[train_idx],
+        labels[train_idx],
+        ecg_memmap_path=str(ecg_memmap_path),
+        ecg_indices=train_idx,
     )
     val_ds = MultimodalCardiacDataset(
-        val_paths, clinical_standardized[val_idx], labels[val_idx]
+        clinical_standardized[val_idx],
+        labels[val_idx],
+        ecg_memmap_path=str(ecg_memmap_path),
+        ecg_indices=val_idx,
     )
 
     effective_train_workers = NUM_WORKERS if train_num_workers is None else train_num_workers
@@ -424,6 +496,7 @@ def load_and_prepare_data(
         f"[DATA] DataLoader config: train_workers={effective_train_workers} | "
         f"val_workers={effective_val_workers} | "
         f"pin_memory={torch.cuda.is_available()} | "
+        f"memmap={ecg_memmap_path.name} | "
         f"prefetch_factor={PREFETCH_FACTOR if effective_train_workers > 0 or effective_val_workers > 0 else 'n/a'}"
     )
 

@@ -78,6 +78,7 @@ def _save_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
     optimizer: optim.Optimizer,
+    scaler,
     epoch: int,
     best_val_f1: float,
     best_threshold: float,
@@ -91,6 +92,7 @@ def _save_checkpoint(
         "best_threshold": best_threshold,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
         "history": history,
         "args": vars(args),
         "random_state": random.getstate(),
@@ -106,7 +108,7 @@ def _resume_from_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
     optimizer: optim.Optimizer,
-    device: torch.device,
+    scaler,
 ):
     if not checkpoint_path.exists():
         return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
@@ -120,6 +122,9 @@ def _resume_from_checkpoint(
     try:
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scaler_state_dict = checkpoint.get("scaler_state_dict")
+        if scaler is not None and scaler_state_dict is not None:
+            scaler.load_state_dict(scaler_state_dict)
     except RuntimeError as exc:
         print(f"[LOAD] Checkpoint incompatible with current model: {exc}")
         print("[LOAD] Starting fresh training run with the updated architecture.")
@@ -153,16 +158,6 @@ def _resume_from_checkpoint(
     return next_epoch, best_val_f1, best_threshold, history
 
 
-def _should_continue(next_epoch: int, total_epochs: int) -> bool:
-    while True:
-        response = input(f"[PROMPT] Continue to epoch {next_epoch}/{total_epochs}? [Y/n]: ").strip().lower()
-        if response in {"", "y", "yes"}:
-            return True
-        if response in {"n", "no"}:
-            return False
-        print("[PROMPT] Please enter 'y' or 'n'.")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Train Late Fusion AMI model")
     parser.add_argument("--subset", type=int, default=None,
@@ -171,12 +166,17 @@ def main():
                         help="Override training DataLoader worker count")
     parser.add_argument("--val-workers", type=int, default=None,
                         help="Override validation DataLoader worker count")
+    parser.add_argument("--disable-amp", action="store_true",
+                        help="Disable CUDA automatic mixed precision")
     args = parser.parse_args()
 
     seed_everything()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    amp_enabled = device.type == "cuda" and not args.disable_amp
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
     print(f"[INFO] Device: {device}")
+    print(f"[INFO] AMP: {'enabled' if amp_enabled else 'disabled'}")
 
     for directory in [MODELS_DIR, PLOTS_DIR, METRICS_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
@@ -217,7 +217,7 @@ def main():
     best_model_path = _best_model_path()
     resumed_from_checkpoint = checkpoint_path.exists()
     start_epoch, best_val_f1, best_threshold, history = _resume_from_checkpoint(
-        checkpoint_path, model, optimizer, device
+        checkpoint_path, model, optimizer, scaler
     )
     active_threshold = best_threshold
 
@@ -230,10 +230,22 @@ def main():
 
     for epoch in range(start_epoch, NUM_EPOCHS + 1):
         train_loss, train_metrics = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, threshold=active_threshold
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            device,
+            threshold=active_threshold,
+            amp_enabled=amp_enabled,
+            scaler=scaler,
         )
         val_loss, val_metrics = evaluate(
-            model, val_loader, criterion, device, auto_threshold=True
+            model,
+            val_loader,
+            criterion,
+            device,
+            auto_threshold=True,
+            amp_enabled=amp_enabled,
         )
         active_threshold = val_metrics["threshold"]
 
@@ -263,12 +275,8 @@ def main():
             )
 
         _save_checkpoint(
-            checkpoint_path, model, optimizer, epoch, best_val_f1, best_threshold, history, args
+            checkpoint_path, model, optimizer, scaler, epoch, best_val_f1, best_threshold, history, args
         )
-
-        if epoch < NUM_EPOCHS and not _should_continue(epoch + 1, NUM_EPOCHS):
-            print(f"[STOP] Training paused after epoch {epoch}. Rerun the script to resume from epoch {epoch + 1}.")
-            break
 
     elapsed = time.time() - start_time
     print("-" * 86)
@@ -283,10 +291,21 @@ def main():
         print(f"[LOAD] Best model restored from {best_model_path}")
 
     final_val_loss, final_val_metrics, final_val_outputs = evaluate(
-        model, val_loader, criterion, device, threshold=best_threshold, return_outputs=True
+        model,
+        val_loader,
+        criterion,
+        device,
+        threshold=best_threshold,
+        return_outputs=True,
+        amp_enabled=amp_enabled,
     )
     final_train_loss, final_train_metrics = evaluate(
-        model, train_loader, criterion, device, threshold=best_threshold
+        model,
+        train_loader,
+        criterion,
+        device,
+        threshold=best_threshold,
+        amp_enabled=amp_enabled,
     )
 
     metrics_payload = {
