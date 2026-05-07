@@ -1,71 +1,77 @@
 # ==========================================
-# EXPLAIN — Model Explainability (Shared)
+# EXPLAIN - Model Explainability (Shared)
 # ==========================================
-# Model-agnostic gradient × input attribution.
-# Works with ANY PyTorch model that takes
+# Model-agnostic gradient x input attribution.
+# Works with any PyTorch model that takes
 # (ecg, clinical) inputs.
 # ==========================================
 
 import numpy as np
 import torch
 
-# ── Clinical feature names & normal ranges (dataset-level, shared) ───────────
+from Dataset.feature_schema import CLINICAL_FEATURES, NORMAL_RANGES
 
-CLINICAL_FEATURES = [
-    "anchor_age", "gender",
-    "Heart_Rate", "Respiratory_Rate",
-    "Troponin_T", "Creatinine", "Sodium", "Potassium",
-    "num_diagnoses", "los",
-    "PR_interval", "QRS_duration", "QT_interval", "QTc",
-    "P_axis", "QRS_axis", "T_axis", "RR_interval",
-    "Troponin_T_missing", "Creatinine_missing",
-    "Sodium_missing", "Potassium_missing",
-    "Heart_Rate_missing", "Respiratory_Rate_missing",
-]
-
-NORMAL_RANGES = {
-    "anchor_age":        (18,  90,   "years"),
-    "Heart_Rate":        (60,  100,  "bpm"),
-    "Respiratory_Rate":  (12,  20,   "breaths/min"),
-    "Troponin_T":        (0,   0.04, "ng/mL"),
-    "Creatinine":        (0.6, 1.2,  "mg/dL"),
-    "Sodium":            (136, 145,  "mEq/L"),
-    "Potassium":         (3.5, 5.0,  "mEq/L"),
-    "PR_interval":       (120, 200,  "ms"),
-    "QRS_duration":      (60,  120,  "ms"),
-    "QT_interval":       (350, 450,  "ms"),
-    "QTc":               (350, 460,  "ms"),
-    "P_axis":            (0,   75,   "°"),
-    "QRS_axis":          (-30, 90,   "°"),
-    "T_axis":            (15,  75,   "°"),
-    "RR_interval":       (600, 1000, "ms"),
-}
 
 FRIENDLY_NAMES = {
-    "anchor_age":           "Age",
-    "gender":               "Gender",
-    "Heart_Rate":           "Heart Rate",
-    "Respiratory_Rate":     "Respiratory Rate",
-    "Troponin_T":           "Troponin T",
-    "Creatinine":           "Creatinine",
-    "Sodium":               "Sodium",
-    "Potassium":            "Potassium",
-    "num_diagnoses":        "Number of Diagnoses",
-    "los":                  "Length of Stay",
-    "PR_interval":          "PR Interval",
-    "QRS_duration":         "QRS Duration",
-    "QT_interval":          "QT Interval",
-    "QTc":                  "Corrected QT (QTc)",
-    "P_axis":               "P Axis",
-    "QRS_axis":             "QRS Axis",
-    "T_axis":               "T Axis",
-    "RR_interval":          "RR Interval",
-    "Troponin_T_missing":   "Troponin T (missing)",
-    "Creatinine_missing":   "Creatinine (missing)",
-    "Sodium_missing":       "Sodium (missing)",
-    "Potassium_missing":    "Potassium (missing)",
-    "Heart_Rate_missing":   "Heart Rate (missing)",
+    "anchor_age": "Age",
+    "gender": "Gender",
+    "Heart_Rate": "Heart Rate",
+    "Respiratory_Rate": "Respiratory Rate",
+    "Troponin_T": "Troponin T",
+    "log1p_Troponin_T": "Log Troponin T",
+    "Troponin_T_positive": "Troponin T Positive",
+    "Troponin_T_high": "Troponin T High",
+    "age_x_log1p_Troponin_T": "Age x Log Troponin T",
+    "Creatinine": "Creatinine",
+    "Creatinine_high": "Creatinine High",
+    "Sodium": "Sodium",
+    "Potassium": "Potassium",
+    "Potassium_low": "Potassium Low",
+    "Potassium_high": "Potassium High",
+    "troponin_first_24h": "First 24h Troponin",
+    "troponin_max_24h": "Max 24h Troponin",
+    "troponin_count_24h": "24h Troponin Count",
+    "hours_admit_to_first_troponin": "Hours Admit To First Troponin",
+    "troponin_24h_missing": "24h Troponin Missing",
+    "creatinine_max_24h": "Max 24h Creatinine",
+    "potassium_min_24h": "Min 24h Potassium",
+    "hours_admit_to_ecg": "Hours Admit To ECG",
+    "ecg_within_first_6h": "ECG Within First 6h",
+    "ecg_within_first_24h": "ECG Within First 24h",
+    "ecg_before_admission": "ECG Before Admission",
+    "ecg_after_discharge": "ECG After Discharge",
+    "ecg_time_missing": "ECG Time Missing",
+    "num_diagnoses": "Number of Diagnoses",
+    "los": "Length of Stay",
+    "PR_interval": "PR Interval",
+    "QRS_duration": "QRS Duration",
+    "QT_interval": "QT Interval",
+    "QTc": "Corrected QT (QTc)",
+    "P_axis": "P Axis",
+    "QRS_axis": "QRS Axis",
+    "T_axis": "T Axis",
+    "RR_interval": "RR Interval",
+    "Troponin_T_missing": "Troponin T (missing)",
+    "Creatinine_missing": "Creatinine (missing)",
+    "Sodium_missing": "Sodium (missing)",
+    "Potassium_missing": "Potassium (missing)",
+    "Heart_Rate_missing": "Heart Rate (missing)",
     "Respiratory_Rate_missing": "Respiratory Rate (missing)",
+    "PR_interval_invalid": "PR Interval Invalid",
+    "QRS_duration_invalid": "QRS Duration Invalid",
+    "QT_interval_invalid": "QT Interval Invalid",
+    "QTc_invalid": "QTc Invalid",
+    "P_axis_invalid": "P Axis Invalid",
+    "QRS_axis_invalid": "QRS Axis Invalid",
+    "T_axis_invalid": "T Axis Invalid",
+    "RR_interval_invalid": "RR Interval Invalid",
+    "QRS_wide": "Wide QRS",
+    "QTc_prolonged": "QTc Prolonged",
+    "PR_prolonged": "PR Prolonged",
+    "QRS_axis_deviation": "QRS Axis Deviation",
+    "T_axis_abnormal": "T Axis Abnormal",
+    "HR_from_RR_interval": "Heart Rate From RR",
+    "HR_RR_disagreement": "Heart Rate RR Disagreement",
 }
 
 
@@ -73,27 +79,14 @@ def _friendly_name(feat):
     return FRIENDLY_NAMES.get(feat, feat.replace("_", " ").title())
 
 
-# ==========================================
-# GRADIENT × INPUT ATTRIBUTION
-# ==========================================
-
 def compute_clinical_attributions(model, ecg_tensor, clinical_tensor, device):
     """
-    Compute Gradient × Input attributions for clinical features.
-
-    Works with ANY model that has a forward(ecg, clinical) signature.
-
-    Parameters
-    ----------
-    model           : nn.Module (any fusion model)
-    ecg_tensor      : torch.Tensor of shape (1, 12, 5000)
-    clinical_tensor : torch.Tensor of shape (1, N_features)
-    device          : torch.device
+    Compute gradient x input attributions for clinical features.
 
     Returns
     -------
-    attributions : np.ndarray of shape (N_features,) — |gradient × input|
-    probability  : float — sigmoid probability of AMI
+    attributions : np.ndarray of shape (N_features,)
+    probability  : float
     """
     model.eval()
 
@@ -106,49 +99,32 @@ def compute_clinical_attributions(model, ecg_tensor, clinical_tensor, device):
     logits.backward()
 
     grad = clinical.grad.detach().cpu().numpy().flatten()
-    inp  = clinical.detach().cpu().numpy().flatten()
+    inp = clinical.detach().cpu().numpy().flatten()
     attributions = np.abs(grad * inp)
 
     return attributions, probability
 
 
-# ==========================================
-# REASONING GENERATION
-# ==========================================
-
 def generate_reasoning(attributions, raw_clinical_values, probability, top_k=5):
     """
     Generate human-readable reasoning from model attributions.
-
-    Parameters
-    ----------
-    attributions        : np.ndarray — attribution scores per feature
-    raw_clinical_values : dict — {feature_name: raw_value}
-    probability         : float — predicted AMI probability
-    top_k               : int — number of top features to explain
-
-    Returns
-    -------
-    reasoning : list of dict — ranked explanations
-    summary   : str — one-line summary of top reasons
     """
-    # Normalize attributions to 0–1
     attr_max = attributions.max()
     normalized = attributions / attr_max if attr_max > 0 else attributions
 
-    # Build scored list
     feature_scores = []
     for i, feat_name in enumerate(CLINICAL_FEATURES):
         if i < len(normalized):
-            feature_scores.append({
-                "feature": feat_name,
-                "attribution": float(normalized[i]),
-                "raw_value": float(raw_clinical_values.get(feat_name, 0)),
-            })
+            feature_scores.append(
+                {
+                    "feature": feat_name,
+                    "attribution": float(normalized[i]),
+                    "raw_value": float(raw_clinical_values.get(feat_name, 0)),
+                }
+            )
 
     feature_scores.sort(key=lambda x: x["attribution"], reverse=True)
 
-    # Generate explanations
     reasoning = []
     for rank, item in enumerate(feature_scores[:top_k], 1):
         feat = item["feature"]
@@ -157,7 +133,7 @@ def generate_reasoning(attributions, raw_clinical_values, probability, top_k=5):
 
         if feat in NORMAL_RANGES:
             lo, hi, unit = NORMAL_RANGES[feat]
-            normal_range_str = f"{lo}–{hi}"
+            normal_range_str = f"{lo}-{hi}"
 
             if value < lo:
                 deviation = (lo - value) / max(abs(hi - lo), 1e-8)
@@ -176,22 +152,24 @@ def generate_reasoning(attributions, raw_clinical_values, probability, top_k=5):
             unit, normal_range_str = "", "N/A"
             lo, hi = 0, 1
             status, is_abnormal = "Indicator", 0
-            explanation = f"{_friendly_name(feat)} = {value:.2f} — model found this relevant"
+            explanation = f"{_friendly_name(feat)} = {value:.2f} - model found this relevant"
 
-        reasoning.append({
-            "rank": rank,
-            "feature": feat,
-            "display_name": _friendly_name(feat),
-            "value": round(value, 4),
-            "unit": unit,
-            "normal_min": lo,
-            "normal_max": hi,
-            "normal_range": normal_range_str,
-            "is_abnormal": is_abnormal,
-            "status": status,
-            "attribution_score": round(attr_score, 4),
-            "explanation": explanation,
-        })
+        reasoning.append(
+            {
+                "rank": rank,
+                "feature": feat,
+                "display_name": _friendly_name(feat),
+                "value": round(value, 4),
+                "unit": unit,
+                "normal_min": lo,
+                "normal_max": hi,
+                "normal_range": normal_range_str,
+                "is_abnormal": is_abnormal,
+                "status": status,
+                "attribution_score": round(attr_score, 4),
+                "explanation": explanation,
+            }
+        )
 
     summary = "; ".join(r["explanation"] for r in reasoning[:3])
     return reasoning, summary
@@ -202,10 +180,9 @@ def _build_explanation(feat, value, unit, lo, hi, status):
     name = _friendly_name(feat)
     if "CRITICAL" in status:
         qualifier = "critically elevated" if "above" in status.lower() else "critically low"
-        return f"{name} is {value:.2g} {unit} (normal: {lo}–{hi}) — {qualifier}"
-    elif "Above" in status:
-        return f"{name} is {value:.2g} {unit} (normal: {lo}–{hi}) — elevated"
-    elif "Below" in status:
-        return f"{name} is {value:.2g} {unit} (normal: {lo}–{hi}) — below normal"
-    else:
-        return f"{name} is {value:.2g} {unit} (normal: {lo}–{hi}) — within normal but model-relevant"
+        return f"{name} is {value:.2g} {unit} (normal: {lo}-{hi}) - {qualifier}"
+    if "Above" in status:
+        return f"{name} is {value:.2g} {unit} (normal: {lo}-{hi}) - elevated"
+    if "Below" in status:
+        return f"{name} is {value:.2g} {unit} (normal: {lo}-{hi}) - below normal"
+    return f"{name} is {value:.2g} {unit} (normal: {lo}-{hi}) - within normal but model-relevant"

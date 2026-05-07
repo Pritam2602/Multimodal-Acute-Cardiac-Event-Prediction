@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # DB path — shared across models. Each model's store_predictions.py
 # writes to this same database.
 PROJECT_ROOT = Path(__file__).resolve().parent
-DB_PATH = PROJECT_ROOT / "early_fusion" / "artifacts" / "predictions.db"
+DB_PATH = PROJECT_ROOT / "late_fusion" / "artifacts" / "predictions.db"
 
 ECG_LEAD_NAMES = ["I", "II", "III", "aVR", "aVL", "aVF",
                   "V1", "V2", "V3", "V4", "V5", "V6"]

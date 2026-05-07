@@ -58,36 +58,23 @@ SEED = 42
 # ══════════════════════════════════════════════════════════════════════════════
 
 MODEL_REGISTRY = {
-    "early_fusion": {
-        "module":      "early_fusion.model",
-        "class":       "EarlyFusionModel",
-        "weights":     "early_fusion/artifacts/models/early_fusion_model.pth",
-        "config": {
-            "n_leads":    12,
-            "ecg_length": 5000,
-            "n_clinical": 24,
-            "dropout":    0.4,
-        },
-        "metrics":      "early_fusion/artifacts/metrics/metrics.json",
-        "dataset_module": "early_fusion.dataset",
-    },
     "late_fusion": {
-        "module":      "late_fusion.model",
-        "class":       "LateFusionModel",
-        "weights":     "late_fusion/artifacts/models/late_fusion_model.pth",
+        "module": "late_fusion.model",
+        "class": "LateFusionModel",
+        "weights": "late_fusion/artifacts/models/late_fusion_model.pth",
         "config": {
-            "n_leads":    12,
+            "n_leads": 12,
             "ecg_length": 5000,
-            "n_clinical": 24,
-            "dropout":    0.4,
+            "n_clinical": 46,
+            "dropout": 0.4,
         },
-        "metrics":      "late_fusion/artifacts/metrics/metrics.json",
+        "metrics": "late_fusion/artifacts/metrics/metrics.json",
         "dataset_module": "late_fusion.dataset",
     },
 }
 
 # Default DB location
-DB_PATH = PROJECT_ROOT / "early_fusion" / "artifacts" / "predictions.db"
+DB_PATH = PROJECT_ROOT / "late_fusion" / "artifacts" / "predictions.db"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -239,8 +226,8 @@ def evaluate_model(model, test_local_paths, test_clinical, test_labels, device, 
     all_probs : np.ndarray — predicted probabilities
     all_preds : np.ndarray — binary predictions
     """
-    from early_fusion.dataset import load_ecg_signal
-    from early_fusion.config import ECG_LEADS, ECG_LENGTH
+    from late_fusion.dataset import load_ecg_signal
+    from late_fusion.config import ECG_LEADS, ECG_LENGTH
 
     model.eval()
     all_probs = []
@@ -312,7 +299,7 @@ def main():
     print(" STEP 1: LOADING DATA")
     print("=" * 70)
 
-    from early_fusion.dataset import load_and_prepare_data
+    from late_fusion.dataset import load_and_prepare_data
     _, _, _, test_metadata = load_and_prepare_data(subset=args.subset)
 
     test_df          = test_metadata["test_df"]
@@ -359,7 +346,6 @@ def main():
 
     if not results:
         print("\n[ERROR] No trained models found. Train at least one model first.")
-        print("  → python -m early_fusion.train")
         print("  → python -m late_fusion.train")
         return
 
@@ -434,8 +420,8 @@ def main():
     best_probs = best["probs"]
     best_preds = best["preds"]
 
-    from early_fusion.dataset import load_ecg_signal
-    from early_fusion.config import ECG_LEADS, ECG_LENGTH
+    from late_fusion.dataset import load_ecg_signal
+    from late_fusion.config import ECG_LEADS, ECG_LENGTH
 
     print(f"\n  Running explainability for {n_test:,} patients ...")
 

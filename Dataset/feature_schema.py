@@ -1,0 +1,161 @@
+# ==========================================
+# SHARED FEATURE SCHEMA
+# ==========================================
+
+NUMERIC_COLS = [
+    "Troponin_T",
+    "Creatinine",
+    "Sodium",
+    "Potassium",
+    "Heart_Rate",
+    "Respiratory_Rate",
+    "anchor_age",
+    "troponin_first_24h",
+    "troponin_max_24h",
+    "troponin_count_24h",
+    "hours_admit_to_first_troponin",
+    "creatinine_max_24h",
+    "potassium_min_24h",
+    "hours_admit_to_ecg",
+]
+
+ECG_MACHINE_COLS = [
+    "PR_interval",
+    "QRS_duration",
+    "QT_interval",
+    "QTc",
+    "P_axis",
+    "QRS_axis",
+    "T_axis",
+    "RR_interval",
+]
+
+CLINICAL_FEATURES = [
+    # Demographics
+    "anchor_age",
+    "gender",
+    # Vital signs
+    "Heart_Rate",
+    "Respiratory_Rate",
+    # Lab values
+    "Troponin_T",
+    "log1p_Troponin_T",
+    "Troponin_T_positive",
+    "Troponin_T_high",
+    "age_x_log1p_Troponin_T",
+    "Creatinine",
+    "Creatinine_high",
+    "Sodium",
+    "Potassium",
+    "Potassium_low",
+    "Potassium_high",
+    # First-24h lab timing features
+    "troponin_first_24h",
+    "troponin_max_24h",
+    "troponin_count_24h",
+    "hours_admit_to_first_troponin",
+    "troponin_24h_missing",
+    "creatinine_max_24h",
+    "potassium_min_24h",
+    # ECG-admission timing features
+    "hours_admit_to_ecg",
+    "ecg_within_first_6h",
+    "ecg_within_first_24h",
+    "ecg_before_admission",
+    "ecg_after_discharge",
+    "ecg_time_missing",
+    # Hospital stay info
+    "num_diagnoses",
+    "los",
+    # ECG machine measurements (tabular, not raw signal)
+    "PR_interval",
+    "QRS_duration",
+    "QT_interval",
+    "QTc",
+    "P_axis",
+    "QRS_axis",
+    "T_axis",
+    "RR_interval",
+    "HR_from_RR_interval",
+    "HR_RR_disagreement",
+    # ECG-machine abnormality flags
+    "QRS_wide",
+    "QTc_prolonged",
+    "PR_prolonged",
+    "QRS_axis_deviation",
+    "T_axis_abnormal",
+    # Missingness indicators
+    "Troponin_T_missing",
+    "Creatinine_missing",
+    "Sodium_missing",
+    "Potassium_missing",
+    "Heart_Rate_missing",
+    "Respiratory_Rate_missing",
+    # Invalid ECG-machine indicators
+    "PR_interval_invalid",
+    "QRS_duration_invalid",
+    "QT_interval_invalid",
+    "QTc_invalid",
+    "P_axis_invalid",
+    "QRS_axis_invalid",
+    "T_axis_invalid",
+    "RR_interval_invalid",
+]
+
+VALID_RANGES = {
+    "anchor_age": (0, 120),
+    "Heart_Rate": (20, 250),
+    "Respiratory_Rate": (5, 60),
+    "Troponin_T": (0, 50),
+    "troponin_first_24h": (0, 50),
+    "troponin_max_24h": (0, 50),
+    "troponin_count_24h": (0, 24),
+    "hours_admit_to_first_troponin": (0, 1000),
+    "Creatinine": (0.1, 15),
+    "creatinine_max_24h": (0.1, 15),
+    "Sodium": (100, 180),
+    "Potassium": (1.5, 10),
+    "potassium_min_24h": (1.5, 10),
+    "hours_admit_to_ecg": (0, 1000),
+    "PR_interval": (50, 500),
+    "QRS_duration": (40, 300),
+    "QT_interval": (200, 800),
+    "QTc": (200, 800),
+    "P_axis": (-180, 360),
+    "QRS_axis": (-180, 360),
+    "T_axis": (-180, 360),
+    "RR_interval": (200, 3000),
+}
+
+MODEL_INPUT_VALID_RANGES = {
+    **VALID_RANGES,
+    "HR_from_RR_interval": (20, 250),
+    "HR_RR_disagreement": (0, 250),
+    "log1p_Troponin_T": (0, 10),
+    "age_x_log1p_Troponin_T": (0, 1000),
+}
+
+NORMAL_RANGES = {
+    "anchor_age": (18, 90, "years"),
+    "Heart_Rate": (60, 100, "bpm"),
+    "Respiratory_Rate": (12, 20, "breaths/min"),
+    "Troponin_T": (0, 0.04, "ng/mL"),
+    "troponin_first_24h": (0, 0.04, "ng/mL"),
+    "troponin_max_24h": (0, 0.04, "ng/mL"),
+    "troponin_count_24h": (1, 3, "count"),
+    "hours_admit_to_first_troponin": (0, 24, "hours"),
+    "Creatinine": (0.6, 1.2, "mg/dL"),
+    "creatinine_max_24h": (0.6, 1.2, "mg/dL"),
+    "Sodium": (136, 145, "mEq/L"),
+    "Potassium": (3.5, 5.0, "mEq/L"),
+    "potassium_min_24h": (3.5, 5.0, "mEq/L"),
+    "hours_admit_to_ecg": (0, 24, "hours"),
+    "PR_interval": (120, 200, "ms"),
+    "QRS_duration": (60, 120, "ms"),
+    "QT_interval": (350, 450, "ms"),
+    "QTc": (350, 460, "ms"),
+    "P_axis": (0, 75, "deg"),
+    "QRS_axis": (-30, 90, "deg"),
+    "T_axis": (15, 75, "deg"),
+    "RR_interval": (600, 1000, "ms"),
+}

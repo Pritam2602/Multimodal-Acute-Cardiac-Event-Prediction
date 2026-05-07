@@ -34,7 +34,7 @@ from .config import (
 )
 from .dataset import load_and_prepare_data
 from .engine import train_one_epoch, evaluate
-from .losses import FocalLoss
+from .losses import BCEWithLogitsLossWrapper, FocalLoss, HybridBCELoss
 from .model import LateFusionModel
 from .plots import (
     save_accuracy_plot,
@@ -74,6 +74,31 @@ def _best_model_path() -> Path:
     return MODELS_DIR / "late_fusion_model.pth"
 
 
+def _build_criterion(args: argparse.Namespace, pos_weight: torch.Tensor):
+    pos_weight = pos_weight.to(args.device)
+
+    if args.loss_mode == "bce":
+        return BCEWithLogitsLossWrapper(pos_weight=pos_weight), "BCEWithLogitsLoss"
+
+    if args.loss_mode == "hybrid":
+        return HybridBCELoss(
+            alpha=FOCAL_LOSS_ALPHA,
+            gamma=FOCAL_LOSS_GAMMA,
+            pos_weight=pos_weight,
+            bce_weight=args.hybrid_bce_weight,
+            focal_weight=args.hybrid_focal_weight,
+        ), (
+            f"HybridBCELoss(bce={args.hybrid_bce_weight:.2f},"
+            f"focal={args.hybrid_focal_weight:.2f})"
+        )
+
+    return FocalLoss(
+        alpha=FOCAL_LOSS_ALPHA,
+        gamma=FOCAL_LOSS_GAMMA,
+        pos_weight=pos_weight,
+    ), "FocalLoss"
+
+
 def _save_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
@@ -87,6 +112,7 @@ def _save_checkpoint(
 ):
     payload = {
         "model_name": "late_fusion",
+        "num_clinical_features": NUM_CLINICAL_FEATURES,
         "epoch": epoch,
         "best_val_f1": best_val_f1,
         "best_threshold": best_threshold,
@@ -117,6 +143,14 @@ def _resume_from_checkpoint(
     if checkpoint.get("model_name") != "late_fusion":
         print(f"[LOAD] Ignoring checkpoint not created by late_fusion: {checkpoint_path}")
         print("[LOAD] Starting fresh late-fusion training run.")
+        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
+    if checkpoint.get("num_clinical_features") not in (None, NUM_CLINICAL_FEATURES):
+        print(
+            "[LOAD] Checkpoint clinical feature count "
+            f"({checkpoint.get('num_clinical_features')}) does not match current config "
+            f"({NUM_CLINICAL_FEATURES})."
+        )
+        print("[LOAD] Starting fresh training run with the updated engineered feature set.")
         return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
 
     try:
@@ -168,13 +202,27 @@ def main():
                         help="Override validation DataLoader worker count")
     parser.add_argument("--disable-amp", action="store_true",
                         help="Disable CUDA automatic mixed precision")
+    parser.add_argument("--weighted-sampling", action="store_true",
+                        help="Use a weighted sampler for the training split")
+    parser.add_argument("--loss-mode", choices=["bce", "focal", "hybrid"], default="hybrid",
+                        help="Training loss to use")
+    parser.add_argument("--hybrid-bce-weight", type=float, default=0.5,
+                        help="BCE contribution when --loss-mode=hybrid")
+    parser.add_argument("--hybrid-focal-weight", type=float, default=0.5,
+                        help="Focal contribution when --loss-mode=hybrid")
     args = parser.parse_args()
+
+    if args.hybrid_bce_weight < 0 or args.hybrid_focal_weight < 0:
+        raise ValueError("Hybrid loss weights must be non-negative.")
+    if args.loss_mode == "hybrid" and (args.hybrid_bce_weight + args.hybrid_focal_weight) == 0:
+        raise ValueError("Hybrid loss weights cannot both be zero.")
 
     seed_everything()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amp_enabled = device.type == "cuda" and not args.disable_amp
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
+    args.device = device
     print(f"[INFO] Device: {device}")
     print(f"[INFO] AMP: {'enabled' if amp_enabled else 'disabled'}")
 
@@ -189,6 +237,7 @@ def main():
         subset=args.subset,
         train_num_workers=args.num_workers,
         val_num_workers=args.val_workers,
+        weighted_sampling=args.weighted_sampling,
     )
 
     print("\n" + "=" * 70)
@@ -206,11 +255,8 @@ def main():
     print(f"[MODEL] Total parameters : {total_params:,}")
     print(f"[MODEL] Trainable params : {train_params:,}")
 
-    criterion = FocalLoss(
-        alpha=FOCAL_LOSS_ALPHA,
-        gamma=FOCAL_LOSS_GAMMA,
-        pos_weight=pos_weight.to(device),
-    )
+    criterion, loss_name = _build_criterion(args, pos_weight)
+    print(f"[INFO] Loss: {loss_name}")
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     checkpoint_path = _latest_checkpoint_path()
@@ -322,7 +368,7 @@ def main():
         "epochs_completed": completed_epochs,
         "target_epochs": NUM_EPOCHS,
         "learning_rate": LEARNING_RATE,
-        "loss_name": "FocalLoss",
+        "loss_name": loss_name,
         "history": {k: [round(v, 6) for v in vals] for k, vals in history.items()},
         "validation_outputs": {
             "labels": [int(v) for v in final_val_outputs["labels"]],
