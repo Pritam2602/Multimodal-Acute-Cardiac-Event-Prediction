@@ -1,6 +1,6 @@
 import argparse
-import copy
 import csv
+import gc
 import json
 import random
 from pathlib import Path
@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.optim as optim
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 
 from .config import (
     DEFAULT_THRESHOLD,
@@ -27,10 +27,14 @@ from .config import (
     NUM_EPOCHS,
     SEED,
     TEST_SPLIT,
-    VAL_NUM_WORKERS,
     WEIGHT_DECAY,
 )
-from .dataset import make_split_dataloaders, prepare_full_dataset
+from .dataset import (
+    infer_group_ids,
+    make_split_dataloaders,
+    prepare_full_dataset,
+    stratified_group_train_test_split,
+)
 from .engine import evaluate, train_one_epoch
 from .losses import build_loss
 from .model import EarlyFusionModel
@@ -51,6 +55,13 @@ def _resolve_metrics_dir(run_name: str | None) -> Path:
     return MODELS_DIR.parent / "runs" / run_name / "metrics"
 
 
+def _clone_state_dict_to_cpu(model: torch.nn.Module) -> dict:
+    return {
+        name: tensor.detach().cpu().clone()
+        for name, tensor in model.state_dict().items()
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cross-validation for Early Fusion AMI model")
     parser.add_argument("--subset", type=int, default=None,
@@ -65,20 +76,24 @@ def main():
                         help="AdamW weight decay")
     parser.add_argument("--dropout", type=float, default=DROPOUT_RATE,
                         help="Model dropout")
+    parser.add_argument("--model-arch", choices=["baseline", "resnet"], default="baseline",
+                        help="ECG feature extractor architecture")
     parser.add_argument("--loss-name", choices=["focal", "bce"], default=LOSS_NAME,
                         help="Loss function to use")
     parser.add_argument("--focal-alpha", type=float, default=FOCAL_LOSS_ALPHA,
                         help="Alpha parameter for focal loss")
     parser.add_argument("--focal-gamma", type=float, default=FOCAL_LOSS_GAMMA,
                         help="Gamma parameter for focal loss")
+    parser.add_argument("--pos-weight-scale", type=float, default=1.0,
+                        help="Multiply each fold's positive-class weight by this factor")
     parser.add_argument("--early-stopping-patience", type=int, default=EARLY_STOPPING_PATIENCE,
                         help="Stop after this many non-improving epochs; set 0 to disable")
     parser.add_argument("--early-stopping-min-delta", type=float, default=EARLY_STOPPING_MIN_DELTA,
                         help="Minimum F1 improvement to count as better")
-    parser.add_argument("--num-workers", type=int, default=None,
-                        help="Override training DataLoader worker count")
-    parser.add_argument("--val-workers", type=int, default=VAL_NUM_WORKERS,
-                        help="Override validation DataLoader worker count")
+    parser.add_argument("--num-workers", type=int, default=0,
+                        help="Training DataLoader worker count; 0 is safest for Windows CV")
+    parser.add_argument("--val-workers", type=int, default=0,
+                        help="Validation DataLoader worker count; 0 is safest for Windows CV")
     parser.add_argument("--weighted-sampling", action="store_true",
                         help="Use a weighted sampler for training folds")
     parser.add_argument("--run-name", type=str, default="crossval",
@@ -97,19 +112,39 @@ def main():
     labels = prepared["labels"]
     indices = np.arange(len(labels))
 
-    train_pool_idx, test_idx = train_test_split(
-        indices, test_size=TEST_SPLIT, random_state=SEED, stratify=labels
+    group_name, groups = infer_group_ids(prepared["df"])
+    if groups is not None:
+        print(f"[DATA] Grouped split enabled: {group_name} ({len(np.unique(groups)):,} groups)")
+    else:
+        print("[DATA] Grouped split unavailable; falling back to row-level stratified split")
+
+    train_pool_idx, test_idx = stratified_group_train_test_split(
+        indices,
+        labels,
+        groups,
+        test_size=TEST_SPLIT,
+        seed=SEED,
     )
     pool_labels = labels[train_pool_idx]
     print(f"[DATA] Held-out test size kept fixed at {len(test_idx):,} samples")
+    if groups is not None:
+        overlap = len(set(groups[train_pool_idx]) & set(groups[test_idx]))
+        print(f"[DATA] Held-out test group overlap: {overlap}")
 
-    skf = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=SEED)
+    if groups is not None:
+        splitter = StratifiedGroupKFold(n_splits=args.folds, shuffle=True, random_state=SEED)
+        split_iter = splitter.split(
+            np.zeros(len(train_pool_idx)),
+            pool_labels,
+            groups=groups[train_pool_idx],
+        )
+    else:
+        splitter = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=SEED)
+        split_iter = splitter.split(np.zeros(len(train_pool_idx)), pool_labels)
+
     rows = []
 
-    for fold, (train_sub_idx, val_sub_idx) in enumerate(
-        skf.split(np.zeros(len(train_pool_idx)), pool_labels),
-        start=1,
-    ):
+    for fold, (train_sub_idx, val_sub_idx) in enumerate(split_iter, start=1):
         seed_everything(SEED + fold)
         print("\n" + "=" * 70)
         print(f" FOLD {fold}/{args.folds}")
@@ -117,6 +152,10 @@ def main():
 
         train_idx = train_pool_idx[train_sub_idx]
         val_idx = train_pool_idx[val_sub_idx]
+        if groups is not None:
+            overlap = len(set(groups[train_idx]) & set(groups[val_idx]))
+            print(f"[DATA] Fold {fold} group overlap: {overlap}")
+
         split_data = make_split_dataloaders(
             prepared,
             train_idx=train_idx,
@@ -132,10 +171,17 @@ def main():
             ecg_length=ECG_LENGTH,
             n_clinical=NUM_CLINICAL_FEATURES,
             dropout=args.dropout,
+            extractor_arch=args.model_arch,
         ).to(device)
+        raw_pos_weight = split_data["pos_weight"]
+        effective_pos_weight = raw_pos_weight * args.pos_weight_scale
+        print(
+            f"[LOSS] raw_pos_weight={raw_pos_weight.item():.4f} | "
+            f"effective_pos_weight={effective_pos_weight.item():.4f}"
+        )
         criterion = build_loss(
             args.loss_name,
-            pos_weight=split_data["pos_weight"].to(device),
+            pos_weight=effective_pos_weight.to(device),
             alpha=args.focal_alpha,
             gamma=args.focal_gamma,
         )
@@ -156,7 +202,7 @@ def main():
         best_threshold = DEFAULT_THRESHOLD
         active_threshold = DEFAULT_THRESHOLD
         epochs_without_improvement = 0
-        best_state_dict = copy.deepcopy(model.state_dict())
+        best_state_dict = _clone_state_dict_to_cpu(model)
 
         for epoch in range(1, args.epochs + 1):
             train_loss, train_metrics = train_one_epoch(
@@ -188,7 +234,7 @@ def main():
                 best_epoch = epoch
                 best_threshold = active_threshold
                 epochs_without_improvement = 0
-                best_state_dict = copy.deepcopy(model.state_dict())
+                best_state_dict = _clone_state_dict_to_cpu(model)
             else:
                 epochs_without_improvement += 1
 
@@ -218,6 +264,8 @@ def main():
             "auc": round(final_val_metrics["auc"], 6),
             "average_precision": round(final_val_metrics["average_precision"], 6),
             "threshold": round(best_threshold, 6),
+            "pos_weight": round(float(raw_pos_weight.item()), 6),
+            "effective_pos_weight": round(float(effective_pos_weight.item()), 6),
         }
         rows.append(row)
 
@@ -226,6 +274,11 @@ def main():
             f"auc={row['auc']:.4f} ap={row['average_precision']:.4f}"
         )
 
+        del split_data, model, optimizer, scheduler, criterion, scaler, best_state_dict
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     summary = {
         "folds": args.folds,
         "epochs": args.epochs,
@@ -233,7 +286,9 @@ def main():
         "learning_rate": args.learning_rate,
         "weight_decay": args.weight_decay,
         "dropout": args.dropout,
+        "model_arch": args.model_arch,
         "weighted_sampling": args.weighted_sampling,
+        "pos_weight_scale": args.pos_weight_scale,
         "focal_alpha": args.focal_alpha if args.loss_name == "focal" else None,
         "focal_gamma": args.focal_gamma if args.loss_name == "focal" else None,
         "mean_f1": round(float(np.mean([row["f1"] for row in rows])), 6),

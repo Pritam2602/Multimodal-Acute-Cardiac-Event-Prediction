@@ -64,7 +64,7 @@ def _compute_metrics(labels, probs, threshold):
 
 def train_one_epoch(model, loader, criterion, optimizer, device,
                     max_grad_norm=1.0, threshold=DEFAULT_THRESHOLD,
-                    scaler=None):
+                    scaler=None, label_smoothing=0.0, scheduler=None):
     model.train()
     running_loss = 0.0
     n_samples = 0
@@ -76,12 +76,18 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
         clinical = clinical.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
+        # Apply label smoothing: 0→smooth, 1→(1-smooth)
+        if label_smoothing > 0:
+            smooth_labels = labels * (1 - label_smoothing) + (1 - labels) * label_smoothing
+        else:
+            smooth_labels = labels
+
         optimizer.zero_grad(set_to_none=True)
 
         # Mixed precision forward pass
         with torch.amp.autocast("cuda", enabled=use_amp):
             logits = model(ecg, clinical)
-            loss = criterion(logits, labels)
+            loss = criterion(logits, smooth_labels)
 
         if torch.isnan(loss):
             continue
@@ -96,6 +102,10 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
+
+        # Step per-batch schedulers (e.g. OneCycleLR) AFTER optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
 
         running_loss += loss.item() * labels.size(0)
         n_samples += labels.size(0)

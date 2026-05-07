@@ -39,8 +39,30 @@ from sklearn.metrics import (
 
 from explain import (
     compute_clinical_attributions, generate_reasoning,
-    CLINICAL_FEATURES,
+    CLINICAL_FEATURES as DEFAULT_CLINICAL_FEATURES,
 )
+
+LAB_TIMING_FEATURES = {
+    "troponin_first_24h",
+    "troponin_max_24h",
+    "troponin_count_24h",
+    "hours_admit_to_first_troponin",
+    "troponin_24h_missing",
+    "creatinine_max_24h",
+    "potassium_min_24h",
+}
+ECG_TIMING_FEATURES = {
+    "hours_admit_to_ecg",
+    "ecg_within_first_6h",
+    "ecg_within_first_24h",
+    "ecg_before_admission",
+    "ecg_after_discharge",
+    "ecg_time_missing",
+}
+LEGACY_46_CLINICAL_FEATURES = [
+    feature for feature in DEFAULT_CLINICAL_FEATURES
+    if feature not in LAB_TIMING_FEATURES and feature not in ECG_TIMING_FEATURES
+]
 
 # ── Project paths ────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -61,14 +83,15 @@ MODEL_REGISTRY = {
     "early_fusion": {
         "module":      "early_fusion.model",
         "class":       "EarlyFusionModel",
-        "weights":     "early_fusion/artifacts/models/early_fusion_model.pth",
+        "weights":     "early_fusion/artifacts/runs/strict_ami_grouped_early_focal/models/early_fusion_model.pth",
         "config": {
             "n_leads":    12,
             "ecg_length": 5000,
-            "n_clinical": 24,
+            "n_clinical": len(DEFAULT_CLINICAL_FEATURES),
             "dropout":    0.3,
         },
-        "metrics":      "early_fusion/artifacts/metrics/metrics.json",
+        "clinical_features": LEGACY_46_CLINICAL_FEATURES,
+        "metrics":      "early_fusion/artifacts/runs/strict_ami_grouped_early_focal/metrics/metrics.json",
         "dataset_module": "early_fusion.dataset",
     },
     "late_fusion": {
@@ -78,9 +101,10 @@ MODEL_REGISTRY = {
         "config": {
             "n_leads":    12,
             "ecg_length": 5000,
-            "n_clinical": 24,
+            "n_clinical": len(DEFAULT_CLINICAL_FEATURES),
             "dropout":    0.4,
         },
+        "clinical_features": LEGACY_46_CLINICAL_FEATURES,
         "metrics":      "late_fusion/artifacts/metrics/metrics.json",
         "dataset_module": "late_fusion.dataset",
     },
@@ -190,6 +214,32 @@ def _load_model_threshold(info):
         return 0.5
 
 
+def _load_model_clinical_features(info):
+    metrics_path = PROJECT_ROOT / info.get("metrics", "")
+    if metrics_path.exists():
+        try:
+            with open(metrics_path, "r") as f:
+                payload = json.load(f)
+            features = payload.get("clinical_features")
+            if features:
+                return list(features)
+        except Exception:
+            pass
+    return list(info.get("clinical_features", DEFAULT_CLINICAL_FEATURES))
+
+
+def _load_model_arch(info):
+    metrics_path = PROJECT_ROOT / info.get("metrics", "")
+    if metrics_path.exists():
+        try:
+            with open(metrics_path, "r") as f:
+                payload = json.load(f)
+            return payload.get("model_arch", info.get("config", {}).get("extractor_arch", "baseline"))
+        except Exception:
+            pass
+    return info.get("config", {}).get("extractor_arch", "baseline")
+
+
 def load_model(model_name, device):
     """
     Dynamically load a model from the registry.
@@ -212,13 +262,17 @@ def load_model(model_name, device):
         mod = importlib.import_module(info["module"])
         ModelClass = getattr(mod, info["class"])
 
-        model = ModelClass(**info["config"]).to(device)
-        model.load_state_dict(torch.load(weights_path, map_location=device))
+        clinical_features = _load_model_clinical_features(info)
+        model_arch = _load_model_arch(info)
+        config = {**info["config"], "n_clinical": len(clinical_features), "extractor_arch": model_arch}
+        model = ModelClass(**config).to(device)
+        state_dict = torch.load(weights_path, map_location=device, weights_only=True)
+        model.load_state_dict(state_dict)
         model.eval()
 
         threshold = _load_model_threshold(info)
         print(f"  [OK]   '{model_name}' loaded from {weights_path} (threshold={threshold:.4f})")
-        return model, {**info, "threshold": threshold}
+        return model, {**info, "threshold": threshold, "clinical_features": clinical_features}
 
     except Exception as e:
         print(f"  [FAIL] '{model_name}' — {e}")
@@ -317,6 +371,7 @@ def main():
     test_df          = test_metadata["test_df"]
     test_local_paths = test_metadata["test_local_paths"]
     test_clinical    = test_metadata["test_clinical"]
+    loaded_clinical_features = test_metadata.get("clinical_features", DEFAULT_CLINICAL_FEATURES)
     test_labels      = test_metadata["test_labels"]
     test_ecg_indices = test_metadata["test_ecg_indices"]
 
@@ -345,15 +400,20 @@ def main():
         if model is None:
             continue
 
+        feature_indices = [loaded_clinical_features.index(feat) for feat in info["clinical_features"]]
+        model_test_clinical = test_clinical[:, feature_indices]
+
         print(f"  Evaluating on {n_test:,} test patients ...")
         metrics, probs, preds = evaluate_model(
-            model, test_ecg_memmap, test_ecg_indices, test_clinical, test_labels,
+            model, test_ecg_memmap, test_ecg_indices, model_test_clinical, test_labels,
             DEVICE, threshold=info["threshold"]
         )
 
         results[model_name] = {
             "model": model,
             "threshold": info["threshold"],
+            "clinical_features": info["clinical_features"],
+            "test_clinical": model_test_clinical,
             "metrics": metrics,
             "probs": probs,
             "preds": preds,
@@ -441,6 +501,8 @@ def main():
     best_model = best["model"]
     best_probs = best["probs"]
     best_preds = best["preds"]
+    best_clinical_features = best["clinical_features"]
+    best_test_clinical = best["test_clinical"]
 
     from early_fusion.config import ECG_LEADS, ECG_LENGTH
 
@@ -451,7 +513,7 @@ def main():
         ecg = np.array(test_ecg_memmap[test_ecg_indices[i]])
 
         ecg_tensor      = torch.tensor(ecg, dtype=torch.float32).unsqueeze(0)
-        clinical_tensor = torch.tensor(test_clinical[i], dtype=torch.float32).unsqueeze(0)
+        clinical_tensor = torch.tensor(best_test_clinical[i], dtype=torch.float32).unsqueeze(0)
 
         # Compute attributions
         attributions, _ = compute_clinical_attributions(
@@ -468,12 +530,17 @@ def main():
         # Raw clinical values for reasoning
         row = test_df.iloc[i]
         raw_values = {}
-        for feat in CLINICAL_FEATURES:
+        for feat in best_clinical_features:
             if feat in test_df.columns:
                 val = row.get(feat, 0)
                 raw_values[feat] = float(val) if not (isinstance(val, float) and np.isnan(val)) else 0.0
 
-        reasoning, summary = generate_reasoning(attributions, raw_values, probability)
+        reasoning, summary = generate_reasoning(
+            attributions,
+            raw_values,
+            probability,
+            feature_names=best_clinical_features,
+        )
 
         # Insert patient
         cursor.execute("""

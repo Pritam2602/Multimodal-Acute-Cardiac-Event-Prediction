@@ -1,71 +1,91 @@
 # ==========================================
-# EXPLAIN — Model Explainability (Shared)
+# EXPLAIN - Model Explainability (Shared)
 # ==========================================
-# Model-agnostic gradient × input attribution.
-# Works with ANY PyTorch model that takes
+# Model-agnostic gradient x input attribution.
+# Works with any PyTorch model that takes
 # (ecg, clinical) inputs.
 # ==========================================
 
 import numpy as np
 import torch
 
-# ── Clinical feature names & normal ranges (dataset-level, shared) ───────────
+from early_fusion.config import CLINICAL_FEATURES, NORMAL_RANGES
 
-CLINICAL_FEATURES = [
-    "anchor_age", "gender",
-    "Heart_Rate", "Respiratory_Rate",
-    "Troponin_T", "Creatinine", "Sodium", "Potassium",
-    "num_diagnoses", "los",
-    "PR_interval", "QRS_duration", "QT_interval", "QTc",
-    "P_axis", "QRS_axis", "T_axis", "RR_interval",
-    "Troponin_T_missing", "Creatinine_missing",
-    "Sodium_missing", "Potassium_missing",
-    "Heart_Rate_missing", "Respiratory_Rate_missing",
-]
-
-NORMAL_RANGES = {
-    "anchor_age":        (18,  90,   "years"),
-    "Heart_Rate":        (60,  100,  "bpm"),
-    "Respiratory_Rate":  (12,  20,   "breaths/min"),
-    "Troponin_T":        (0,   0.04, "ng/mL"),
-    "Creatinine":        (0.6, 1.2,  "mg/dL"),
-    "Sodium":            (136, 145,  "mEq/L"),
-    "Potassium":         (3.5, 5.0,  "mEq/L"),
-    "PR_interval":       (120, 200,  "ms"),
-    "QRS_duration":      (60,  120,  "ms"),
-    "QT_interval":       (350, 450,  "ms"),
-    "QTc":               (350, 460,  "ms"),
-    "P_axis":            (0,   75,   "°"),
-    "QRS_axis":          (-30, 90,   "°"),
-    "T_axis":            (15,  75,   "°"),
-    "RR_interval":       (600, 1000, "ms"),
-}
 
 FRIENDLY_NAMES = {
-    "anchor_age":           "Age",
-    "gender":               "Gender",
-    "Heart_Rate":           "Heart Rate",
-    "Respiratory_Rate":     "Respiratory Rate",
-    "Troponin_T":           "Troponin T",
-    "Creatinine":           "Creatinine",
-    "Sodium":               "Sodium",
-    "Potassium":            "Potassium",
-    "num_diagnoses":        "Number of Diagnoses",
-    "los":                  "Length of Stay",
-    "PR_interval":          "PR Interval",
-    "QRS_duration":         "QRS Duration",
-    "QT_interval":          "QT Interval",
-    "QTc":                  "Corrected QT (QTc)",
-    "P_axis":               "P Axis",
-    "QRS_axis":             "QRS Axis",
-    "T_axis":               "T Axis",
-    "RR_interval":          "RR Interval",
-    "Troponin_T_missing":   "Troponin T (missing)",
-    "Creatinine_missing":   "Creatinine (missing)",
-    "Sodium_missing":       "Sodium (missing)",
-    "Potassium_missing":    "Potassium (missing)",
-    "Heart_Rate_missing":   "Heart Rate (missing)",
-    "Respiratory_Rate_missing": "Respiratory Rate (missing)",
+    "anchor_age": "Age",
+    "gender": "Gender",
+    "Heart_Rate": "Heart Rate",
+    "Respiratory_Rate": "Respiratory Rate",
+    "Troponin_T": "Troponin T",
+    "log1p_Troponin_T": "Log Troponin T",
+    "Troponin_T_positive": "Troponin T Positive",
+    "Troponin_T_high": "Troponin T High",
+    "troponin_first_24h": "First Troponin T in 24h",
+    "troponin_max_24h": "Max Troponin T in 24h",
+    "troponin_count_24h": "Troponin T Count in 24h",
+    "hours_admit_to_first_troponin": "Hours to First Troponin",
+    "troponin_24h_missing": "Troponin T Missing in 24h",
+    "Troponin_T_mild_positive": "Mild Troponin T Positive",
+    "Troponin_T_moderate_positive": "Moderate Troponin T Positive",
+    "Troponin_T_severe_positive": "Severe Troponin T Positive",
+    "age_x_log1p_Troponin_T": "Age x Log Troponin T",
+    "Creatinine": "Creatinine",
+    "Creatinine_high": "Creatinine High",
+    "creatinine_max_24h": "Max Creatinine in 24h",
+    "log_troponin_x_creatinine": "Log Troponin x Creatinine",
+    "troponin_x_creatinine_high": "Troponin x High Creatinine",
+    "Sodium": "Sodium",
+    "Potassium": "Potassium",
+    "Potassium_low": "Potassium Low",
+    "Potassium_high": "Potassium High",
+    "potassium_min_24h": "Min Potassium in 24h",
+    "hours_admit_to_ecg": "Hours from Admission to ECG",
+    "ecg_within_first_6h": "ECG Within First 6h",
+    "ecg_within_first_24h": "ECG Within First 24h",
+    "ecg_before_admission": "ECG Before Admission",
+    "ecg_after_discharge": "ECG After Discharge",
+    "ecg_time_missing": "ECG Time Missing",
+    "num_diagnoses": "Number of Diagnoses",
+    "los": "Length of Stay",
+    "PR_interval": "PR Interval",
+    "QRS_duration": "QRS Duration",
+    "QT_interval": "QT Interval",
+    "QTc": "Corrected QT (QTc)",
+    "P_axis": "P Axis",
+    "QRS_axis": "QRS Axis",
+    "T_axis": "T Axis",
+    "RR_interval": "RR Interval",
+    "HR_from_RR_interval": "Heart Rate from RR",
+    "HR_RR_disagreement": "Heart Rate/RR Disagreement",
+    "QRS_wide": "Wide QRS",
+    "QTc_prolonged": "Prolonged QTc",
+    "PR_prolonged": "Prolonged PR",
+    "QRS_axis_deviation": "QRS Axis Deviation",
+    "T_axis_abnormal": "Abnormal T Axis",
+    "ecg_abnormality_count": "ECG Abnormality Count",
+    "ecg_any_abnormal": "Any ECG Abnormality",
+    "troponin_high_and_ecg_abnormal": "High Troponin with ECG Abnormality",
+    "troponin_high_and_t_axis_abnormal": "High Troponin with T Axis Abnormality",
+    "troponin_high_and_qrs_wide": "High Troponin with Wide QRS",
+    "troponin_high_and_qtc_prolonged": "High Troponin with Prolonged QTc",
+    "ecg_abnormal_without_troponin_high": "ECG Abnormality without High Troponin",
+    "older_with_ecg_abnormal": "Older Patient with ECG Abnormality",
+    "qrs_or_t_axis_abnormal_without_troponin": "QRS/T Axis Abnormality without High Troponin",
+    "Troponin_T_missing": "Troponin T Missing",
+    "Creatinine_missing": "Creatinine Missing",
+    "Sodium_missing": "Sodium Missing",
+    "Potassium_missing": "Potassium Missing",
+    "Heart_Rate_missing": "Heart Rate Missing",
+    "Respiratory_Rate_missing": "Respiratory Rate Missing",
+    "PR_interval_invalid": "PR Interval Invalid",
+    "QRS_duration_invalid": "QRS Duration Invalid",
+    "QT_interval_invalid": "QT Interval Invalid",
+    "QTc_invalid": "QTc Invalid",
+    "P_axis_invalid": "P Axis Invalid",
+    "QRS_axis_invalid": "QRS Axis Invalid",
+    "T_axis_invalid": "T Axis Invalid",
+    "RR_interval_invalid": "RR Interval Invalid",
 }
 
 
@@ -74,39 +94,34 @@ def _friendly_name(feat):
 
 
 # ==========================================
-# GRADIENT × INPUT ATTRIBUTION
+# GRADIENT X INPUT ATTRIBUTION
 # ==========================================
 
 def compute_clinical_attributions(model, ecg_tensor, clinical_tensor, device):
     """
-    Compute Gradient × Input attributions for clinical features.
+    Compute Gradient x Input attributions for clinical features.
 
-    Works with ANY model that has a forward(ecg, clinical) signature.
-
-    Parameters
-    ----------
-    model           : nn.Module (any fusion model)
-    ecg_tensor      : torch.Tensor of shape (1, 12, 5000)
-    clinical_tensor : torch.Tensor of shape (1, N_features)
-    device          : torch.device
-
-    Returns
-    -------
-    attributions : np.ndarray of shape (N_features,) — |gradient × input|
-    probability  : float — sigmoid probability of AMI
+    Works with any model that has a forward(ecg, clinical) signature.
     """
+    was_training = model.training
     model.eval()
 
     ecg = ecg_tensor.to(device)
-    clinical = clinical_tensor.to(device).requires_grad_(True)
+    clinical = clinical_tensor.to(device).detach().clone().requires_grad_(True)
 
-    logits = model(ecg, clinical)
-    probability = torch.sigmoid(logits).item()
+    model.zero_grad(set_to_none=True)
+    # cuDNN RNN kernels cannot run backward while the model is in eval mode.
+    # Disable cuDNN only for attribution so dropout stays off and gradients work.
+    with torch.backends.cudnn.flags(enabled=False):
+        logits = model(ecg, clinical)
+        probability = torch.sigmoid(logits).item()
+        logits.backward()
 
-    logits.backward()
+    if was_training:
+        model.train()
 
     grad = clinical.grad.detach().cpu().numpy().flatten()
-    inp  = clinical.detach().cpu().numpy().flatten()
+    inp = clinical.detach().cpu().numpy().flatten()
     attributions = np.abs(grad * inp)
 
     return attributions, probability
@@ -116,29 +131,29 @@ def compute_clinical_attributions(model, ecg_tensor, clinical_tensor, device):
 # REASONING GENERATION
 # ==========================================
 
-def generate_reasoning(attributions, raw_clinical_values, probability, top_k=5):
+def generate_reasoning(attributions, raw_clinical_values, probability, top_k=5, feature_names=None):
     """
     Generate human-readable reasoning from model attributions.
 
     Parameters
     ----------
-    attributions        : np.ndarray — attribution scores per feature
-    raw_clinical_values : dict — {feature_name: raw_value}
-    probability         : float — predicted AMI probability
-    top_k               : int — number of top features to explain
+    attributions        : np.ndarray - attribution scores per feature
+    raw_clinical_values : dict - {feature_name: raw_value}
+    probability         : float - predicted AMI probability
+    top_k               : int - number of top features to explain
+    feature_names        : list[str] or None - feature order matching attributions
 
     Returns
     -------
-    reasoning : list of dict — ranked explanations
-    summary   : str — one-line summary of top reasons
+    reasoning : list of dict - ranked explanations
+    summary   : str - one-line summary of top reasons
     """
-    # Normalize attributions to 0–1
     attr_max = attributions.max()
     normalized = attributions / attr_max if attr_max > 0 else attributions
 
-    # Build scored list
     feature_scores = []
-    for i, feat_name in enumerate(CLINICAL_FEATURES):
+    active_features = list(feature_names or CLINICAL_FEATURES)
+    for i, feat_name in enumerate(active_features):
         if i < len(normalized):
             feature_scores.append({
                 "feature": feat_name,
@@ -148,7 +163,6 @@ def generate_reasoning(attributions, raw_clinical_values, probability, top_k=5):
 
     feature_scores.sort(key=lambda x: x["attribution"], reverse=True)
 
-    # Generate explanations
     reasoning = []
     for rank, item in enumerate(feature_scores[:top_k], 1):
         feat = item["feature"]
@@ -157,7 +171,7 @@ def generate_reasoning(attributions, raw_clinical_values, probability, top_k=5):
 
         if feat in NORMAL_RANGES:
             lo, hi, unit = NORMAL_RANGES[feat]
-            normal_range_str = f"{lo}–{hi}"
+            normal_range_str = f"{lo}-{hi}"
 
             if value < lo:
                 deviation = (lo - value) / max(abs(hi - lo), 1e-8)
@@ -176,7 +190,7 @@ def generate_reasoning(attributions, raw_clinical_values, probability, top_k=5):
             unit, normal_range_str = "", "N/A"
             lo, hi = 0, 1
             status, is_abnormal = "Indicator", 0
-            explanation = f"{_friendly_name(feat)} = {value:.2f} — model found this relevant"
+            explanation = f"{_friendly_name(feat)} = {value:.2f} - model found this relevant"
 
         reasoning.append({
             "rank": rank,
@@ -202,10 +216,9 @@ def _build_explanation(feat, value, unit, lo, hi, status):
     name = _friendly_name(feat)
     if "CRITICAL" in status:
         qualifier = "critically elevated" if "above" in status.lower() else "critically low"
-        return f"{name} is {value:.2g} {unit} (normal: {lo}–{hi}) — {qualifier}"
-    elif "Above" in status:
-        return f"{name} is {value:.2g} {unit} (normal: {lo}–{hi}) — elevated"
-    elif "Below" in status:
-        return f"{name} is {value:.2g} {unit} (normal: {lo}–{hi}) — below normal"
-    else:
-        return f"{name} is {value:.2g} {unit} (normal: {lo}–{hi}) — within normal but model-relevant"
+        return f"{name} is {value:.2g} {unit} (normal: {lo}-{hi}) - {qualifier}"
+    if "Above" in status:
+        return f"{name} is {value:.2g} {unit} (normal: {lo}-{hi}) - elevated"
+    if "Below" in status:
+        return f"{name} is {value:.2g} {unit} (normal: {lo}-{hi}) - below normal"
+    return f"{name} is {value:.2g} {unit} (normal: {lo}-{hi}) - within normal but model-relevant"

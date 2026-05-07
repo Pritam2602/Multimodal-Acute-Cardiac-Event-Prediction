@@ -1,0 +1,101 @@
+{
+  "features": [
+    "anchor_age",
+    "gender",
+    "Heart_Rate",
+    "Respiratory_Rate",
+    "Troponin_T",
+    "log1p_Troponin_T",
+    "Troponin_T_positive",
+    "Troponin_T_high",
+    "age_x_log1p_Troponin_T",
+    "Creatinine",
+    "Creatinine_high",
+    "Sodium",
+    "Potassium",
+    "Potassium_low",
+    "Potassium_high",
+    "num_diagnoses",
+    "los",
+    "PR_interval",
+    "QRS_duration",
+    "QT_interval",
+    "QTc",
+    "P_axis",
+    "QRS_axis",
+    "T_axis",
+    "RR_interval",
+    "HR_from_RR_interval",
+    "HR_RR_disagreement",
+    "QRS_wide",
+    "QTc_prolonged",
+    "PR_prolonged",
+    "QRS_axis_deviation",
+    "T_axis_abnormal",
+    "Troponin_T_missing",
+    "Creatinine_missing",
+    "Sodium_missing",
+    "Potassium_missing",
+    "Heart_Rate_missing",
+    "Respiratory_Rate_missing",
+    "PR_interval_invalid",
+    "QRS_duration_invalid",
+    "QT_interval_invalid",
+    "QTc_invalid",
+    "P_axis_invalid",
+    "QRS_axis_invalid",
+    "T_axis_invalid",
+    "RR_interval_invalid"
+  ],
+  "n_features": 46,
+  "group_name": "subject_id_from_ecg_path",
+  "train_size": 85362,
+  "val_size": 22063,
+  "test_size": 18332,
+  "best_model": "hist_gradient_boosting",
+  "best_val_f1": 0.530483,
+  "rows": [
+    {
+      "model": "logistic_balanced",
+      "train": {
+        "accuracy": 0.793901,
+        "precision": 0.518308,
+        "recall": 0.518563,
+        "f1": 0.518435,
+        "auc": 0.789478,
+        "average_precision": 0.550644,
+        "threshold": 0.622449
+      },
+      "val": {
+        "accuracy": 0.808231,
+        "precision": 0.510782,
+        "recall": 0.54157,
+        "f1": 0.525726,
+        "auc": 0.793968,
+        "average_precision": 0.526073,
+        "threshold": 0.622449
+      }
+    },
+    {
+      "model": "hist_gradient_boosting",
+      "train": {
+        "accuracy": 0.854865,
+        "precision": 0.646145,
+        "recall": 0.71093,
+        "f1": 0.676991,
+        "auc": 0.900372,
+        "average_precision": 0.748714,
+        "threshold": 0.589796
+      },
+      "val": {
+        "accuracy": 0.804877,
+        "precision": 0.502583,
+        "recall": 0.561663,
+        "f1": 0.530483,
+        "auc": 0.795905,
+        "average_precision": 0.528089,
+        "threshold": 0.589796
+      }
+    }
+  ]
+}

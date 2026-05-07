@@ -1,0 +1,9 @@
+{
+  "diagnosis_rows": 4756326,
+  "broad_text_mi_rows": 31829,
+  "acute_code_mi_rows": 12384,
+  "broad_text_mi_admissions": 30496,
+  "acute_code_mi_admissions": 12172,
+  "broad_only_admissions": 22412,
+  "acute_only_admissions": 4088
+}

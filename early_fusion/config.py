@@ -16,7 +16,12 @@ PLOTS_DIR     = ARTIFACT_ROOT / "plots"
 METRICS_DIR   = ARTIFACT_ROOT / "metrics"
 DB_PATH       = ARTIFACT_ROOT / "predictions.db"
 
-# ── Clinical feature columns (from preprocessed parquet) ─────────────────────
+# ── Clinical feature columns (from preprocessed parquet) ─────────────────
+# NOTE: 15 zero-variance features were removed (all values = 0 across
+# the entire dataset).  See analysis/error_analysis.py for verification.
+# Two new features are computed on-the-fly in dataset.py:
+#   troponin_delta_24h        — troponin rise (max - first in 24h)
+#   troponin_creatinine_ratio — troponin normalised by kidney function
 CLINICAL_FEATURES = [
     # Demographics
     "anchor_age",
@@ -36,6 +41,20 @@ CLINICAL_FEATURES = [
     "Potassium",
     "Potassium_low",
     "Potassium_high",
+    # First-24h lab timing features
+    "troponin_first_24h",
+    "troponin_max_24h",
+    "troponin_count_24h",
+    "hours_admit_to_first_troponin",
+    "troponin_24h_missing",
+    "creatinine_max_24h",
+    "potassium_min_24h",
+    # ECG-admission timing features
+    "hours_admit_to_ecg",
+    "ecg_within_first_6h",
+    "ecg_within_first_24h",
+    "ecg_before_admission",
+    "ecg_after_discharge",
     # Hospital stay info
     "num_diagnoses",
     "los",
@@ -56,23 +75,15 @@ CLINICAL_FEATURES = [
     "PR_prolonged",
     "QRS_axis_deviation",
     "T_axis_abnormal",
-    # Missingness indicators
-    "Troponin_T_missing",
-    "Creatinine_missing",
-    "Sodium_missing",
-    "Potassium_missing",
-    "Heart_Rate_missing",
-    "Respiratory_Rate_missing",
-    # Invalid ECG-machine indicators
-    "PR_interval_invalid",
-    "QRS_duration_invalid",
-    "QT_interval_invalid",
-    "QTc_invalid",
-    "P_axis_invalid",
-    "QRS_axis_invalid",
-    "T_axis_invalid",
-    "RR_interval_invalid",
+    # ── Engineered features (computed on-the-fly in dataset.py) ──────────
+    "troponin_delta_24h",
+    "troponin_creatinine_ratio",
 ]
+
+# ── Data filtering (error-analysis-driven) ───────────────────────────────
+# Set to 0 to disable. Recommended: 72 hours and 3 ECGs per patient.
+ECG_TIME_WINDOW_HOURS = 0     # keep ECGs within ±N hours of admission
+MAX_ECGS_PER_PATIENT  = 0     # cap repeated ECGs per patient
 
 TARGET_COLUMN = "AMI"
 
@@ -87,7 +98,7 @@ BATCH_SIZE    = 64
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY  = 1e-4
 NUM_EPOCHS    = 25
-EARLY_STOPPING_PATIENCE = 5
+EARLY_STOPPING_PATIENCE = 10
 EARLY_STOPPING_MIN_DELTA = 1e-4
 VAL_SPLIT     = 0.2
 TEST_SPLIT    = 0.15   # held-out test set for frontend / evaluation
@@ -95,14 +106,19 @@ DROPOUT_RATE  = 0.3
 DEFAULT_THRESHOLD = 0.35
 THRESHOLD_SEARCH_MIN = 0.10
 THRESHOLD_SEARCH_MAX = 0.90
-THRESHOLD_SEARCH_STEPS = 50
+THRESHOLD_SEARCH_STEPS = 200
 LOSS_NAME = "focal"
 FOCAL_LOSS_ALPHA = 1.0
 FOCAL_LOSS_GAMMA = 2.0
+LABEL_SMOOTHING = 0.05
+SCHEDULER_TYPE = "onecycle"       # "onecycle" | "cosine"
 AUG_SCALE_MIN = 0.9
 AUG_SCALE_MAX = 1.1
 AUG_NOISE_STD = 0.02
 AUG_SHIFT_MAX = 100
+AUG_LEAD_DROP_PROB = 0.3
+AUG_CUTOUT_PROB = 0.2
+AUG_WANDER_PROB = 0.25
 # With memmap-backed loading, each worker just reads a single (12, 5000)
 # slice from the memory-mapped file. This is much lighter than the old wfdb
 # loading and doesn't exhaust shared-memory limits on Windows.

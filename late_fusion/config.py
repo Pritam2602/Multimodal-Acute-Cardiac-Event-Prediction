@@ -36,6 +36,21 @@ CLINICAL_FEATURES = [
     "Potassium",
     "Potassium_low",
     "Potassium_high",
+    # First-24h lab timing features
+    "troponin_first_24h",
+    "troponin_max_24h",
+    "troponin_count_24h",
+    "hours_admit_to_first_troponin",
+    "troponin_24h_missing",
+    "creatinine_max_24h",
+    "potassium_min_24h",
+    # ECG-admission timing features
+    "hours_admit_to_ecg",
+    "ecg_within_first_6h",
+    "ecg_within_first_24h",
+    "ecg_before_admission",
+    "ecg_after_discharge",
+    "ecg_time_missing",
     # Hospital stay info
     "num_diagnoses",
     "los",

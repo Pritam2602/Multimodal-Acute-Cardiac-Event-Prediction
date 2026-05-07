@@ -16,7 +16,7 @@ import wfdb
 from pathlib import Path
 from dotenv import load_dotenv
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedGroupKFold, train_test_split
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -25,6 +25,8 @@ from .config import (
     ECG_LEADS, ECG_LENGTH, BATCH_SIZE, VAL_SPLIT, TEST_SPLIT, SEED,
     PROJECT_ROOT, NUM_WORKERS, VAL_NUM_WORKERS, PREFETCH_FACTOR,
     AUG_SCALE_MIN, AUG_SCALE_MAX, AUG_NOISE_STD, AUG_SHIFT_MAX,
+    AUG_LEAD_DROP_PROB, AUG_CUTOUT_PROB, AUG_WANDER_PROB,
+    ECG_TIME_WINDOW_HOURS, MAX_ECGS_PER_PATIENT,
 )
 
 # ── Load .env from project root ──────────────────────────────────────────────
@@ -196,6 +198,9 @@ def _augment_ecg(ecg: np.ndarray) -> np.ndarray:
       1. Random amplitude scaling (±10%)
       2. Additive Gaussian noise (small)
       3. Random temporal shift (up to ±100 samples)
+      4. Random lead dropout (zero out 1–2 leads)
+      5. Random temporal cutout / masking
+      6. Random baseline wander (sinusoidal drift)
 
     Parameters
     ----------
@@ -217,6 +222,27 @@ def _augment_ecg(ecg: np.ndarray) -> np.ndarray:
     shift = np.random.randint(-AUG_SHIFT_MAX, AUG_SHIFT_MAX + 1)
     if shift != 0:
         ecg = np.roll(ecg, shift, axis=1)
+
+    # 4. Random lead dropout — zero out 1–2 leads to prevent single-lead reliance
+    if np.random.random() < AUG_LEAD_DROP_PROB:
+        n_drop = np.random.randint(1, 3)
+        drop_leads = np.random.choice(ecg.shape[0], n_drop, replace=False)
+        ecg[drop_leads, :] = 0.0
+
+    # 5. Random temporal cutout — mask a contiguous segment (simulates artifacts)
+    if np.random.random() < AUG_CUTOUT_PROB:
+        mask_len = np.random.randint(100, 500)
+        max_start = max(ecg.shape[1] - mask_len, 1)
+        start = np.random.randint(0, max_start)
+        ecg[:, start:start + mask_len] = 0.0
+
+    # 6. Random baseline wander — low-frequency sinusoidal drift
+    if np.random.random() < AUG_WANDER_PROB:
+        freq = np.random.uniform(0.1, 0.5)
+        amp = np.random.uniform(0.05, 0.2)
+        t = np.linspace(0, 2 * np.pi * freq, ecg.shape[1])
+        wander = (amp * np.sin(t)).astype(np.float32)
+        ecg = ecg + wander[np.newaxis, :]
 
     return ecg
 
@@ -365,6 +391,62 @@ def _build_weighted_sampler(labels: np.ndarray) -> WeightedRandomSampler | None:
     )
 
 
+def infer_group_ids(df: pd.DataFrame) -> tuple[str | None, np.ndarray | None]:
+    """
+    Return stable patient/admission groups for leakage-safe splitting.
+
+    Prefer subject-level grouping when available. The current model parquet keeps
+    only ecg_path, so we recover subject_id from paths like:
+    mimic-iv-ecg/.../p1579/p15797206/s41845173/41845173
+    """
+    if "subject_id" in df.columns:
+        return "subject_id", df["subject_id"].astype(str).to_numpy()
+
+    if "ecg_path" in df.columns:
+        extracted = df["ecg_path"].astype(str).str.extract(r"/p\d+/p(\d+)/")[0]
+        if extracted.notna().any():
+            return "subject_id_from_ecg_path", extracted.fillna(df["ecg_path"].astype(str)).to_numpy()
+
+    if "hadm_id" in df.columns:
+        return "hadm_id", df["hadm_id"].astype(str).to_numpy()
+
+    return None, None
+
+
+def stratified_group_train_test_split(
+    indices: np.ndarray,
+    labels: np.ndarray,
+    groups: np.ndarray | None,
+    test_size: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Stratified split that keeps all rows from a group in the same side.
+
+    StratifiedGroupKFold controls split size by number of folds, so the resulting
+    row count can be near, not exactly equal to, the requested fraction.
+    """
+    indices = np.asarray(indices)
+
+    if groups is None:
+        return train_test_split(
+            indices,
+            test_size=test_size,
+            random_state=seed,
+            stratify=labels[indices],
+        )
+
+    n_splits = max(2, round(1.0 / test_size))
+    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    local_y = labels[indices]
+    local_groups = groups[indices]
+
+    train_local, test_local = next(
+        splitter.split(np.zeros(len(indices)), local_y, groups=local_groups)
+    )
+    return indices[train_local], indices[test_local]
+
+
 def _make_dataloader(
     dataset: Dataset,
     shuffle: bool,
@@ -395,7 +477,7 @@ def _make_dataloader(
     return DataLoader(dataset, **loader_kwargs)
 
 
-def prepare_full_dataset(subset: int = None):
+def prepare_full_dataset(subset: int = None, clinical_features: list[str] | None = None):
     """
     Load, clean, and cache the full dataset once for reuse across splits.
     """
@@ -407,7 +489,12 @@ def prepare_full_dataset(subset: int = None):
         df = df.head(subset).copy()
         print(f"[DATA] Using subset: {len(df):,} samples")
 
-    clinical_df = df[CLINICAL_FEATURES].copy()
+    selected_features = list(clinical_features or CLINICAL_FEATURES)
+    missing_features = [col for col in selected_features if col not in df.columns]
+    if missing_features:
+        raise ValueError(f"Missing clinical feature columns: {missing_features}")
+
+    clinical_df = df[selected_features].copy()
     labels = df[TARGET_COLUMN].values.astype(np.float32)
     ecg_paths = df["ecg_path"].tolist()
 
@@ -470,6 +557,7 @@ def prepare_full_dataset(subset: int = None):
     return {
         "df": df,
         "clinical_raw": clinical_raw,
+        "clinical_features": selected_features,
         "labels": labels,
         "local_paths": local_paths,
         "ecg_memmap_path": ecg_memmap_path,
@@ -550,11 +638,99 @@ def make_split_dataloaders(
 # MAIN DATA LOADING FUNCTION
 # ==========================================
 
+def _compute_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute error-analysis-driven features on-the-fly.
+
+    These features target the two root causes of the F1 plateau:
+      - troponin_delta_24h: separates rising troponin (true AMI) from
+        chronically elevated troponin (Type 2 MI / CKD false positives)
+      - troponin_creatinine_ratio: normalises troponin by kidney function
+        to reduce false positives from CKD patients
+    """
+    # Troponin trajectory — rise from first to max in 24h
+    if "troponin_max_24h" in df.columns and "troponin_first_24h" in df.columns:
+        df["troponin_delta_24h"] = (
+            df["troponin_max_24h"] - df["troponin_first_24h"]
+        ).fillna(0.0)
+    else:
+        df["troponin_delta_24h"] = 0.0
+
+    # Troponin normalised by kidney function
+    if "log1p_Troponin_T" in df.columns and "Creatinine" in df.columns:
+        df["troponin_creatinine_ratio"] = (
+            df["log1p_Troponin_T"] / (df["Creatinine"].clip(lower=0.1))
+        ).fillna(0.0)
+    else:
+        df["troponin_creatinine_ratio"] = 0.0
+
+    return df
+
+
+def _apply_data_filters(
+    indices: np.ndarray,
+    df: pd.DataFrame,
+    groups: np.ndarray | None,
+    ecg_time_window: int,
+    max_ecgs_per_patient: int,
+) -> np.ndarray:
+    """
+    Apply error-analysis-driven data quality filters.
+
+    Parameters
+    ----------
+    indices : array of valid row indices
+    df : full DataFrame (used for column access)
+    groups : patient group array (or None)
+    ecg_time_window : keep ECGs within ±N hours of admission (0 = off)
+    max_ecgs_per_patient : cap repeated ECGs per patient (0 = off)
+
+    Returns
+    -------
+    filtered_indices : array of indices that pass all filters
+    """
+    n_before = len(indices)
+
+    # Fix 5: Filter ECGs taken far from admission
+    if ecg_time_window > 0 and "hours_admit_to_ecg" in df.columns:
+        hours = df["hours_admit_to_ecg"].values
+        time_valid = np.abs(hours[indices]) <= ecg_time_window
+        indices = indices[time_valid]
+        print(
+            f"[FILTER] ECG timing +/-{ecg_time_window}h: "
+            f"{n_before:,} -> {len(indices):,} "
+            f"(removed {n_before - len(indices):,})"
+        )
+
+    # Fix 4: Cap per-patient ECGs
+    if max_ecgs_per_patient > 0 and groups is not None:
+        from collections import Counter
+        group_counts: dict[int, int] = Counter()
+        keep = []
+        for idx in indices:
+            g = groups[idx]
+            group_counts[g] += 1
+            if group_counts[g] <= max_ecgs_per_patient:
+                keep.append(idx)
+        n_before2 = len(indices)
+        indices = np.array(keep, dtype=indices.dtype)
+        print(
+            f"[FILTER] Per-patient cap ({max_ecgs_per_patient}): "
+            f"{n_before2:,} -> {len(indices):,} "
+            f"(removed {n_before2 - len(indices):,})"
+        )
+
+    return indices
+
+
 def load_and_prepare_data(
     subset: int = None,
     train_num_workers: int | None = None,
     val_num_workers: int | None = None,
     weighted_sampling: bool = False,
+    clinical_features: list[str] | None = None,
+    ecg_time_window: int = ECG_TIME_WINDOW_HOURS,
+    max_ecgs_per_patient: int = MAX_ECGS_PER_PATIENT,
 ):
     """
     Load preprocessed parquet, download ECGs from S3 (multithreaded),
@@ -589,8 +765,16 @@ def load_and_prepare_data(
         df = df.head(subset).copy()
         print(f"[DATA] Using subset: {len(df):,} samples")
 
+    # ── Compute engineered features on-the-fly ────────────────────────────
+    df = _compute_engineered_features(df)
+
     # ── Extract features, labels, paths ──────────────────────────────────
-    clinical_df = df[CLINICAL_FEATURES].copy()
+    selected_features = list(clinical_features or CLINICAL_FEATURES)
+    missing_features = [col for col in selected_features if col not in df.columns]
+    if missing_features:
+        raise ValueError(f"Missing clinical feature columns: {missing_features}")
+
+    clinical_df = df[selected_features].copy()
     labels      = df[TARGET_COLUMN].values.astype(np.float32)
     ecg_paths   = df["ecg_path"].tolist()
 
@@ -670,72 +854,121 @@ def load_and_prepare_data(
             labels       = labels[valid_mask]
             df           = df.iloc[valid_indices].reset_index(drop=True)
             n_samples    = len(labels)
-            print(f"[DATA] Filtered: {n_before:,} → {n_samples:,} (removed {n_before - n_samples:,} failed)")
+            print(f"[DATA] Filtered: {n_before:,} -> {n_samples:,} (removed {n_before - n_samples:,} failed)")
 
         # Build memory-mapped ECG cache (one-time)
         ecg_memmap_path, ecg_memmap_shape = _build_ecg_memmap(local_paths)
 
     # ══════════════════════════════════════════════════════════════════════
-    # STAGE 1: Split off held-out TEST SET (15%)
+    # DATA QUALITY FILTERS (error-analysis-driven)
     # ══════════════════════════════════════════════════════════════════════
     indices = np.arange(n_samples)
-    train_pool_idx, test_idx = train_test_split(
-        indices, test_size=TEST_SPLIT, random_state=SEED, stratify=labels
+    group_name, groups = infer_group_ids(df)
+
+    indices = _apply_data_filters(
+        indices, df, groups, ecg_time_window, max_ecgs_per_patient,
+    )
+
+    # Update labels/groups/clinical to only use filtered indices
+    if len(indices) < n_samples:
+        labels_filtered = labels[indices]
+        clinical_filtered = clinical_raw[indices]
+        groups_filtered = groups[indices] if groups is not None else None
+        # Re-index: after filtering, indices become 0..len-1 for the split,
+        # but we keep the original memmap indices for ECG access.
+        original_memmap_indices = indices.copy()
+        n_filtered = len(indices)
+        print(f"[DATA] After filters: {n_samples:,} -> {n_filtered:,} samples")
+        print(f"[DATA] AMI prevalence (filtered): {labels_filtered.mean():.4%}")
+    else:
+        labels_filtered = labels
+        clinical_filtered = clinical_raw
+        groups_filtered = groups
+        original_memmap_indices = indices.copy()
+        n_filtered = n_samples
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STAGE 1: Split off held-out TEST SET (15%)
+    # ══════════════════════════════════════════════════════════════════════
+    split_indices = np.arange(n_filtered)
+    if groups_filtered is not None:
+        print(f"[DATA] Grouped split enabled: {group_name} ({len(np.unique(groups_filtered)):,} groups)")
+    else:
+        print("[DATA] Grouped split unavailable; falling back to row-level stratified split")
+
+    train_pool_idx, test_idx = stratified_group_train_test_split(
+        split_indices,
+        labels_filtered,
+        groups_filtered,
+        test_size=TEST_SPLIT,
+        seed=SEED,
     )
 
     print(f"[DATA] Stage 1 split: train_pool={len(train_pool_idx):,}  |  test={len(test_idx):,}")
+    if groups_filtered is not None:
+        overlap = len(set(groups_filtered[train_pool_idx]) & set(groups_filtered[test_idx]))
+        print(f"[DATA] Stage 1 group overlap: {overlap}")
 
     # ── Standardize using ONLY train_pool stats (prevent data leakage) ───
-    train_pool_clinical = clinical_raw[train_pool_idx]
+    train_pool_clinical = clinical_filtered[train_pool_idx]
     col_mean = train_pool_clinical.mean(axis=0, keepdims=True)
     col_std  = train_pool_clinical.std(axis=0, keepdims=True) + 1e-8
 
     # Apply same standardization to all splits
-    clinical_standardized = (clinical_raw - col_mean) / col_std
+    clinical_standardized = (clinical_filtered - col_mean) / col_std
+
+    # ── Map split indices → original memmap indices for ECG access ────────
+    test_memmap_idx = original_memmap_indices[test_idx]
 
     # ── Build test metadata (for store_predictions.py) ───────────────────
     test_metadata = {
-        "test_df":          df.iloc[test_idx].reset_index(drop=True),
-        "test_local_paths": [local_paths[i] for i in test_idx],
+        "test_df":          df.iloc[original_memmap_indices[test_idx]].reset_index(drop=True),
+        "clinical_features": selected_features,
+        "test_local_paths": [local_paths[i] for i in test_memmap_idx],
         "test_clinical":    clinical_standardized[test_idx],
-        "test_labels":      labels[test_idx],
+        "test_labels":      labels_filtered[test_idx],
         "col_mean":         col_mean,
         "col_std":          col_std,
         # Memmap info so store_predictions.py can read ECGs without
         # needing the individual .hea/.dat wfdb files on disk.
         "ecg_memmap_path":  ecg_memmap_path,
         "ecg_memmap_shape": ecg_memmap_shape,
-        "test_ecg_indices": test_idx,
+        "test_ecg_indices": test_memmap_idx,
     }
 
     # ══════════════════════════════════════════════════════════════════════
     # STAGE 2: Split train_pool → train (80%) + val (20%)
     # ══════════════════════════════════════════════════════════════════════
-    pool_labels = labels[train_pool_idx]
-    pool_indices = np.arange(len(train_pool_idx))
-    train_sub_idx, val_sub_idx = train_test_split(
-        pool_indices, test_size=VAL_SPLIT, random_state=SEED, stratify=pool_labels
+    train_idx, val_idx = stratified_group_train_test_split(
+        train_pool_idx,
+        labels_filtered,
+        groups_filtered,
+        test_size=VAL_SPLIT,
+        seed=SEED,
     )
+    if groups_filtered is not None:
+        overlap = len(set(groups_filtered[train_idx]) & set(groups_filtered[val_idx]))
+        print(f"[DATA] Stage 2 group overlap: {overlap}")
 
-    # Map back to global indices
-    train_idx = train_pool_idx[train_sub_idx]
-    val_idx   = train_pool_idx[val_sub_idx]
+    # Map to memmap indices for ECG dataset
+    train_memmap_idx = original_memmap_indices[train_idx]
+    val_memmap_idx = original_memmap_indices[val_idx]
 
     train_ds = MultimodalCardiacDataset(
         ecg_memmap_path, ecg_memmap_shape,
-        train_idx, clinical_standardized[train_idx], labels[train_idx],
+        train_memmap_idx, clinical_standardized[train_idx], labels_filtered[train_idx],
         augment=True,   # ECG augmentation for training only
     )
     val_ds = MultimodalCardiacDataset(
         ecg_memmap_path, ecg_memmap_shape,
-        val_idx, clinical_standardized[val_idx], labels[val_idx],
+        val_memmap_idx, clinical_standardized[val_idx], labels_filtered[val_idx],
         augment=False,  # no augmentation for validation
     )
 
     effective_train_workers = NUM_WORKERS if train_num_workers is None else train_num_workers
     effective_val_workers = VAL_NUM_WORKERS if val_num_workers is None else val_num_workers
 
-    train_sampler = _build_weighted_sampler(labels[train_idx]) if weighted_sampling else None
+    train_sampler = _build_weighted_sampler(labels_filtered[train_idx]) if weighted_sampling else None
     train_loader = _make_dataloader(
         train_ds,
         shuffle=True,
@@ -754,9 +987,10 @@ def load_and_prepare_data(
     )
 
     # ── Class weight for imbalanced target ───────────────────────────────
-    n_pos = labels[train_idx].sum()
+    n_pos = labels_filtered[train_idx].sum()
     n_neg = len(train_idx) - n_pos
     pos_weight = torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32)
     print(f"[DATA] Positive class weight: {pos_weight.item():.4f}")
 
     return train_loader, val_loader, pos_weight, test_metadata
+

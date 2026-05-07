@@ -23,9 +23,11 @@ import torch.optim as optim
 from .config import (
     SEED, NUM_EPOCHS, LEARNING_RATE, WEIGHT_DECAY,
     MODELS_DIR, PLOTS_DIR, METRICS_DIR,
-    ECG_LEADS, ECG_LENGTH, NUM_CLINICAL_FEATURES, DROPOUT_RATE,
+    ECG_LEADS, ECG_LENGTH, CLINICAL_FEATURES, NUM_CLINICAL_FEATURES, DROPOUT_RATE,
     DEFAULT_THRESHOLD, FOCAL_LOSS_ALPHA, FOCAL_LOSS_GAMMA,
     EARLY_STOPPING_PATIENCE, EARLY_STOPPING_MIN_DELTA, LOSS_NAME,
+    LABEL_SMOOTHING, SCHEDULER_TYPE,
+    ECG_TIME_WINDOW_HOURS, MAX_ECGS_PER_PATIENT,
 )
 from .dataset import load_and_prepare_data
 from .engine import train_one_epoch, evaluate
@@ -75,6 +77,12 @@ def _resolve_artifact_dirs(run_name: str | None) -> tuple[Path, Path, Path]:
 
     run_root = MODELS_DIR.parent / "runs" / run_name
     return run_root / "models", run_root / "plots", run_root / "metrics"
+
+
+def _parse_excluded_features(raw_value: str | None) -> list[str]:
+    if not raw_value:
+        return []
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 
 def _latest_checkpoint_path_for(models_dir: Path) -> Path:
@@ -211,6 +219,12 @@ def main():
                         help="Alpha parameter for focal loss")
     parser.add_argument("--focal-gamma", type=float, default=FOCAL_LOSS_GAMMA,
                         help="Gamma parameter for focal loss")
+    parser.add_argument("--pos-weight-scale", type=float, default=1.0,
+                        help="Multiply the training positive-class weight by this factor")
+    parser.add_argument("--exclude-clinical-features", type=str, default=None,
+                        help="Comma-separated clinical features to omit for an ablation run")
+    parser.add_argument("--model-arch", choices=["baseline", "resnet", "filmed"], default="baseline",
+                        help="ECG feature extractor architecture")
     parser.add_argument("--early-stopping-patience", type=int, default=EARLY_STOPPING_PATIENCE,
                         help="Stop after this many non-improving epochs; set 0 to disable")
     parser.add_argument("--early-stopping-min-delta", type=float, default=EARLY_STOPPING_MIN_DELTA,
@@ -219,9 +233,25 @@ def main():
                         help="Run through epochs without interactive prompts")
     parser.add_argument("--run-name", type=str, default=None,
                         help="Optional subdirectory name under artifacts/runs for this experiment")
+    parser.add_argument("--label-smoothing", type=float, default=LABEL_SMOOTHING,
+                        help="Label smoothing factor (0=off, 0.05=default)")
+    parser.add_argument("--scheduler", choices=["onecycle", "cosine"], default=SCHEDULER_TYPE,
+                        help="LR scheduler type")
+    parser.add_argument("--ecg-time-window", type=int, default=ECG_TIME_WINDOW_HOURS,
+                        help="Keep ECGs within ±N hours of admission (0=off, recommended=72)")
+    parser.add_argument("--max-ecgs-per-patient", type=int, default=MAX_ECGS_PER_PATIENT,
+                        help="Cap repeated ECGs per patient (0=off, recommended=3)")
     args = parser.parse_args()
 
     seed_everything()
+
+    excluded_features = _parse_excluded_features(args.exclude_clinical_features)
+    unknown_excluded = [feat for feat in excluded_features if feat not in CLINICAL_FEATURES]
+    if unknown_excluded:
+        raise ValueError(f"Unknown --exclude-clinical-features values: {unknown_excluded}")
+    selected_clinical_features = [feat for feat in CLINICAL_FEATURES if feat not in set(excluded_features)]
+    if not selected_clinical_features:
+        raise ValueError("At least one clinical feature must remain after exclusion")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Device: {device}")
@@ -230,14 +260,23 @@ def main():
 
     print(
         f"[RUN] epochs={args.epochs} lr={args.learning_rate} wd={args.weight_decay} "
-        f"dropout={args.dropout} loss={args.loss_name} weighted_sampling={args.weighted_sampling}"
+        f"dropout={args.dropout} loss={args.loss_name} weighted_sampling={args.weighted_sampling} "
+        f"model_arch={args.model_arch}"
     )
     if args.loss_name == "focal":
         print(f"[RUN] focal_alpha={args.focal_alpha} focal_gamma={args.focal_gamma}")
+    print(f"[RUN] pos_weight_scale={args.pos_weight_scale}")
+    if excluded_features:
+        print(
+            f"[RUN] excluded_clinical_features={excluded_features} | "
+            f"n_clinical={len(selected_clinical_features)}/{NUM_CLINICAL_FEATURES}"
+        )
     print(
         f"[RUN] early_stopping_patience={args.early_stopping_patience} "
         f"min_delta={args.early_stopping_min_delta}"
     )
+    print(f"[RUN] scheduler={args.scheduler} label_smoothing={args.label_smoothing}")
+    print(f"[RUN] ecg_time_window={args.ecg_time_window}h max_ecgs_per_patient={args.max_ecgs_per_patient}")
 
     for directory in [models_dir, plots_dir, metrics_dir]:
         directory.mkdir(parents=True, exist_ok=True)
@@ -251,6 +290,9 @@ def main():
         train_num_workers=args.num_workers,
         val_num_workers=args.val_workers,
         weighted_sampling=args.weighted_sampling,
+        clinical_features=selected_clinical_features,
+        ecg_time_window=args.ecg_time_window,
+        max_ecgs_per_patient=args.max_ecgs_per_patient,
     )
 
     print("\n" + "=" * 70)
@@ -259,14 +301,22 @@ def main():
     model = EarlyFusionModel(
         n_leads=ECG_LEADS,
         ecg_length=ECG_LENGTH,
-        n_clinical=NUM_CLINICAL_FEATURES,
+        n_clinical=len(selected_clinical_features),
         dropout=args.dropout,
+        extractor_arch=args.model_arch,
     ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
     train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[MODEL] Total parameters : {total_params:,}")
     print(f"[MODEL] Trainable params : {train_params:,}")
+
+    raw_pos_weight = pos_weight.clone()
+    pos_weight = pos_weight * args.pos_weight_scale
+    print(
+        f"[LOSS] raw_pos_weight={raw_pos_weight.item():.4f} | "
+        f"effective_pos_weight={pos_weight.item():.4f}"
+    )
 
     criterion = build_loss(
         args.loss_name,
@@ -275,7 +325,23 @@ def main():
         gamma=args.focal_gamma,
     )
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+
+    # ── Scheduler ────────────────────────────────────────────────────────
+    # OneCycleLR steps per-batch inside train_one_epoch (warmup → peak → decay).
+    # CosineAnnealing steps per-epoch after validation (legacy behaviour).
+    if args.scheduler == "onecycle":
+        scheduler = optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=args.learning_rate,
+            epochs=args.epochs,
+            steps_per_epoch=len(train_loader),
+            pct_start=0.1,
+            anneal_strategy="cos",
+            div_factor=25,
+            final_div_factor=1000,
+        )
+    else:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
     checkpoint_path = _latest_checkpoint_path_for(models_dir)
     best_model_path = _best_model_path_for(models_dir)
@@ -297,10 +363,15 @@ def main():
 
     stop_reason = "completed"
 
+    # OneCycleLR is passed into engine for per-batch stepping; cosine stays epoch-level
+    batch_scheduler = scheduler if args.scheduler == "onecycle" else None
+
     for epoch in range(start_epoch, args.epochs + 1):
         train_loss, train_metrics = train_one_epoch(
             model, train_loader, criterion, optimizer, device,
             threshold=active_threshold, scaler=scaler,
+            label_smoothing=args.label_smoothing,
+            scheduler=batch_scheduler,
         )
         val_loss, val_metrics = evaluate(
             model, val_loader, criterion, device, auto_threshold=True
@@ -339,7 +410,9 @@ def main():
         else:
             epochs_without_improvement += 1
 
-        scheduler.step()
+        # Only step epoch-level schedulers here (OneCycleLR steps per-batch in engine)
+        if args.scheduler != "onecycle":
+            scheduler.step()
 
         _save_checkpoint(
             checkpoint_path,
@@ -407,12 +480,22 @@ def main():
         "learning_rate": args.learning_rate,
         "weight_decay": args.weight_decay,
         "dropout": args.dropout,
+        "model_arch": args.model_arch,
         "loss_name": args.loss_name,
         "weighted_sampling": args.weighted_sampling,
+        "clinical_features": selected_clinical_features,
+        "excluded_clinical_features": excluded_features,
+        "pos_weight": round(float(raw_pos_weight.item()), 6),
+        "pos_weight_scale": args.pos_weight_scale,
+        "effective_pos_weight": round(float(pos_weight.item()), 6),
         "focal_alpha": args.focal_alpha if args.loss_name == "focal" else None,
         "focal_gamma": args.focal_gamma if args.loss_name == "focal" else None,
         "early_stopping_patience": args.early_stopping_patience,
         "early_stopping_min_delta": args.early_stopping_min_delta,
+        "label_smoothing": args.label_smoothing,
+        "scheduler": args.scheduler,
+        "ecg_time_window": args.ecg_time_window,
+        "max_ecgs_per_patient": args.max_ecgs_per_patient,
         "stopping_reason": stop_reason,
         "history": {k: [round(v, 6) for v in vals] for k, vals in history.items()},
         "validation_outputs": {
