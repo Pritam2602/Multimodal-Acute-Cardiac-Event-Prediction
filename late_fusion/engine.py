@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 import numpy as np
 import torch
 from sklearn.metrics import (
@@ -18,7 +20,17 @@ from .config import (
 
 
 def _autocast_context(device: torch.device, enabled: bool):
-    return torch.amp.autocast(device_type=device.type, enabled=enabled)
+    if not enabled:
+        return nullcontext()
+
+    amp_module = getattr(torch, "amp", None)
+    if amp_module is not None and hasattr(amp_module, "autocast"):
+        return amp_module.autocast(device_type=device.type, enabled=enabled)
+
+    if device.type == "cuda" and hasattr(torch.cuda, "amp"):
+        return torch.cuda.amp.autocast(enabled=enabled)
+
+    return nullcontext()
 
 
 def find_best_threshold(labels, probs, threshold_min=THRESHOLD_SEARCH_MIN,

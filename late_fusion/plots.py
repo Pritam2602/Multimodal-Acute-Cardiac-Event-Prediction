@@ -6,6 +6,7 @@ import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
 
 from .config import PLOTS_DIR
@@ -180,3 +181,82 @@ def save_model_comparison_table(rows, save_path: str = None):
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"[PLOT] Comparison table saved -> {save_path}")
+
+
+def save_optuna_history_plot(trials_df: pd.DataFrame, save_path: str):
+    """Save trial-by-trial optimization history."""
+    completed = trials_df[trials_df["state"] == "COMPLETE"].copy()
+    if completed.empty:
+        print(f"[PLOT] No completed Optuna trials available for {save_path}")
+        return
+
+    completed = completed.sort_values("number")
+    best_so_far = completed["value"].cummax()
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.plot(completed["number"], completed["value"], "o-", color="#2563EB", linewidth=2, label="Trial F1")
+    ax.plot(completed["number"], best_so_far, "-", color="#DC2626", linewidth=2, label="Best So Far")
+    ax.set_xlabel("Trial", fontsize=12)
+    ax.set_ylabel("Validation F1", fontsize=12)
+    ax.set_title("Optuna Optimization History", fontsize=14, fontweight="bold")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=11)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[PLOT] Optuna history saved -> {save_path}")
+
+
+def save_optuna_param_importance_plot(importances: dict[str, float], save_path: str):
+    """Save parameter importance bars from Optuna."""
+    if not importances:
+        print(f"[PLOT] No Optuna importances available for {save_path}")
+        return
+
+    items = sorted(importances.items(), key=lambda item: item[1])
+    labels = [item[0] for item in items]
+    values = [item[1] for item in items]
+
+    fig, ax = plt.subplots(figsize=(9, max(4, len(labels) * 0.45)))
+    ax.barh(labels, values, color="#7C3AED")
+    ax.set_xlabel("Importance", fontsize=12)
+    ax.set_title("Optuna Parameter Importances", fontsize=14, fontweight="bold")
+    ax.grid(True, axis="x", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[PLOT] Optuna importances saved -> {save_path}")
+
+
+def save_optuna_param_slices_plot(trials_df: pd.DataFrame, params: list[str], save_path: str):
+    """Save simple parameter-vs-score scatter slices for completed trials."""
+    completed = trials_df[trials_df["state"] == "COMPLETE"].copy()
+    if completed.empty or not params:
+        print(f"[PLOT] No completed Optuna trials available for {save_path}")
+        return
+
+    n_params = len(params)
+    ncols = 2
+    nrows = int(np.ceil(n_params / ncols))
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(12, max(4, 4 * nrows)))
+    axes = np.atleast_1d(axes).flatten()
+
+    for ax, param in zip(axes, params):
+        col = f"params_{param}"
+        if col not in completed.columns:
+            ax.axis("off")
+            continue
+        ax.scatter(completed[col], completed["value"], c=completed["number"], cmap="viridis", s=35, alpha=0.85)
+        ax.set_xlabel(param, fontsize=11)
+        ax.set_ylabel("Validation F1", fontsize=11)
+        ax.set_title(param, fontsize=12, fontweight="bold")
+        ax.grid(True, alpha=0.25)
+
+    for ax in axes[n_params:]:
+        ax.axis("off")
+
+    fig.suptitle("Optuna Parameter Slices", fontsize=14, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[PLOT] Optuna parameter slices saved -> {save_path}")

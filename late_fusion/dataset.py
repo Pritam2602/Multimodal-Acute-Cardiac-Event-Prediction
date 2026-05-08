@@ -376,13 +376,14 @@ def _make_dataloader(
     dataset: Dataset,
     shuffle: bool,
     num_workers: int,
+    batch_size: int,
     sampler: WeightedRandomSampler | None = None,
 ) -> DataLoader:
     """
     Build a DataLoader with settings that are stable for the current OS/device.
     """
     loader_kwargs = {
-        "batch_size": BATCH_SIZE,
+        "batch_size": batch_size,
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
     }
@@ -403,6 +404,7 @@ def load_and_prepare_data(
     train_num_workers: int | None = None,
     val_num_workers: int | None = None,
     weighted_sampling: bool = False,
+    batch_size: int = BATCH_SIZE,
 ):
     """
     Load preprocessed data and return train/val loaders plus test metadata.
@@ -541,9 +543,15 @@ def load_and_prepare_data(
         train_ds,
         shuffle=train_sampler is None,
         num_workers=effective_train_workers,
+        batch_size=batch_size,
         sampler=train_sampler,
     )
-    val_loader = _make_dataloader(val_ds, shuffle=False, num_workers=effective_val_workers)
+    val_loader = _make_dataloader(
+        val_ds,
+        shuffle=False,
+        num_workers=effective_val_workers,
+        batch_size=batch_size,
+    )
 
     print(
         f"[DATA] Stage 2 split: Train={len(train_ds):,} | "
@@ -552,6 +560,7 @@ def load_and_prepare_data(
     print(
         f"[DATA] DataLoader config: train_workers={effective_train_workers} | "
         f"val_workers={effective_val_workers} | "
+        f"batch_size={batch_size} | "
         f"pin_memory={torch.cuda.is_available()} | "
         f"memmap={ecg_memmap_path.name} | "
         f"prefetch_factor={PREFETCH_FACTOR if effective_train_workers > 0 or effective_val_workers > 0 else 'n/a'}"

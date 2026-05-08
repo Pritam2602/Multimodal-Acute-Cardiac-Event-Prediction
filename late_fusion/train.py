@@ -99,6 +99,15 @@ def _build_criterion(args: argparse.Namespace, pos_weight: torch.Tensor):
     ), "FocalLoss"
 
 
+def _make_grad_scaler(amp_enabled: bool):
+    amp_module = getattr(torch, "amp", None)
+    if amp_module is not None and hasattr(amp_module, "GradScaler"):
+        return amp_module.GradScaler(enabled=amp_enabled)
+    if hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "GradScaler"):
+        return torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    return None
+
+
 def _save_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
@@ -221,7 +230,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amp_enabled = device.type == "cuda" and not args.disable_amp
-    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
+    scaler = _make_grad_scaler(amp_enabled)
     args.device = device
     print(f"[INFO] Device: {device}")
     print(f"[INFO] AMP: {'enabled' if amp_enabled else 'disabled'}")

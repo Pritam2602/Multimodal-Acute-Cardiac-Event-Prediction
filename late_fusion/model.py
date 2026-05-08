@@ -7,20 +7,30 @@ from .config import ECG_LEADS, ECG_LENGTH, NUM_CLINICAL_FEATURES, DROPOUT_RATE
 class ECGBranch(nn.Module):
     """ECG-only encoder that produces a branch-level AMI logit."""
 
-    def __init__(self, n_leads: int, ecg_length: int, dropout: float):
+    def __init__(
+        self,
+        n_leads: int,
+        ecg_length: int,
+        dropout: float,
+        cnn_filters: int = 32,
+        lstm_hidden_size: int = 64,
+    ):
         super().__init__()
 
+        second_filters = cnn_filters * 2
+        third_filters = cnn_filters * 4
+
         self.conv_block = nn.Sequential(
-            nn.Conv1d(n_leads, 32, kernel_size=7, padding=3),
-            nn.BatchNorm1d(32),
+            nn.Conv1d(n_leads, cnn_filters, kernel_size=7, padding=3),
+            nn.BatchNorm1d(cnn_filters),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(kernel_size=4, stride=4),
-            nn.Conv1d(32, 64, kernel_size=5, padding=2),
-            nn.BatchNorm1d(64),
+            nn.Conv1d(cnn_filters, second_filters, kernel_size=5, padding=2),
+            nn.BatchNorm1d(second_filters),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(kernel_size=4, stride=4),
-            nn.Conv1d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm1d(128),
+            nn.Conv1d(second_filters, third_filters, kernel_size=3, padding=1),
+            nn.BatchNorm1d(third_filters),
             nn.ReLU(inplace=True),
             nn.MaxPool1d(kernel_size=2, stride=2),
         )
@@ -32,18 +42,19 @@ class ECGBranch(nn.Module):
 
         self.bilstm = nn.LSTM(
             input_size=lstm_input_size,
-            hidden_size=64,
+            hidden_size=lstm_hidden_size,
             num_layers=1,
             batch_first=True,
             bidirectional=True,
         )
 
+        encoder_dim = lstm_hidden_size * 2
         self.encoder_head = nn.Sequential(
-            nn.Linear(128, 128),
+            nn.Linear(encoder_dim, encoder_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
         )
-        self.logit_head = nn.Linear(128, 1)
+        self.logit_head = nn.Linear(encoder_dim, 1)
 
     def forward(self, ecg):
         x = self.conv_block(ecg)
@@ -90,6 +101,9 @@ class LateFusionModel(nn.Module):
         ecg_length: int = ECG_LENGTH,
         n_clinical: int = NUM_CLINICAL_FEATURES,
         dropout: float = DROPOUT_RATE,
+        cnn_filters: int = 32,
+        lstm_hidden_size: int = 64,
+        fusion_hidden_dim: int = 8,
     ):
         super().__init__()
 
@@ -97,6 +111,8 @@ class LateFusionModel(nn.Module):
             n_leads=n_leads,
             ecg_length=ecg_length,
             dropout=dropout,
+            cnn_filters=cnn_filters,
+            lstm_hidden_size=lstm_hidden_size,
         )
         self.clinical_branch = ClinicalBranch(
             n_clinical=n_clinical,
@@ -104,10 +120,10 @@ class LateFusionModel(nn.Module):
         )
 
         self.fusion_head = nn.Sequential(
-            nn.Linear(2, 8),
+            nn.Linear(2, fusion_hidden_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
-            nn.Linear(8, 1),
+            nn.Linear(fusion_hidden_dim, 1),
         )
 
     def forward(self, ecg, clinical):
