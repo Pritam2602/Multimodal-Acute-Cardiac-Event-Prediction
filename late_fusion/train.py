@@ -27,7 +27,11 @@ import torch.nn as nn
 import torch.optim as optim
 
 from .config import (
-    SEED, NUM_EPOCHS, LEARNING_RATE,
+    CLINICAL_AUX_LOSS_WEIGHT, EARLY_STOPPING_PATIENCE, ECG_AUX_LOSS_WEIGHT,
+    ECG_BRANCH_LR_MULTIPLIER, ECG_BRANCH_TYPE, ECG_CNN_FILTERS, ECG_LSTM_HIDDEN_SIZE,
+    FORCE_FRESH_TRAIN, FUSION_HIDDEN_DIM, FUSION_TYPE,
+    HARD_NEGATIVE_POWER, HARD_NEGATIVE_WEIGHT,
+    SEED, NUM_EPOCHS, LEARNING_RATE, WEIGHTED_SAMPLING_DEFAULT,
     MODELS_DIR, PLOTS_DIR, METRICS_DIR,
     ECG_LEADS, ECG_LENGTH, NUM_CLINICAL_FEATURES, DROPOUT_RATE,
     DEFAULT_THRESHOLD, FOCAL_LOSS_ALPHA, FOCAL_LOSS_GAMMA,
@@ -35,7 +39,7 @@ from .config import (
 from .dataset import load_and_prepare_data
 from .engine import train_one_epoch, evaluate
 from .losses import BCEWithLogitsLossWrapper, FocalLoss, HybridBCELoss
-from .model import LateFusionModel
+from .model import LateFusionModel, get_architecture_metadata
 from .plots import (
     save_accuracy_plot,
     save_confusion_matrix_plot,
@@ -108,6 +112,37 @@ def _make_grad_scaler(amp_enabled: bool):
     return None
 
 
+def _build_optimizer(model: nn.Module) -> optim.Optimizer:
+    ecg_params = []
+    other_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if name.startswith("ecg_branch."):
+            ecg_params.append(param)
+        else:
+            other_params.append(param)
+
+    param_groups = []
+    if ecg_params:
+        param_groups.append(
+            {
+                "params": ecg_params,
+                "lr": LEARNING_RATE * ECG_BRANCH_LR_MULTIPLIER,
+                "name": "ecg_branch",
+            }
+        )
+    if other_params:
+        param_groups.append(
+            {
+                "params": other_params,
+                "lr": LEARNING_RATE,
+                "name": "non_ecg",
+            }
+        )
+    return optim.Adam(param_groups, lr=LEARNING_RATE)
+
+
 def _save_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
@@ -119,12 +154,14 @@ def _save_checkpoint(
     history: dict,
     args: argparse.Namespace,
 ):
+    architecture_metadata = get_architecture_metadata(model)
     payload = {
         "model_name": "late_fusion",
         "num_clinical_features": NUM_CLINICAL_FEATURES,
         "epoch": epoch,
         "best_val_f1": best_val_f1,
         "best_threshold": best_threshold,
+        "architecture_metadata": architecture_metadata,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
@@ -139,20 +176,58 @@ def _save_checkpoint(
     print(f"[SAVE] Checkpoint -> {checkpoint_path}")
 
 
+def _current_architecture_metadata(model: nn.Module) -> dict:
+    return get_architecture_metadata(model)
+
+
+def _architecture_mismatch_reasons(checkpoint_metadata: dict | None, current_metadata: dict) -> list[str]:
+    if not checkpoint_metadata:
+        return ["missing architecture metadata"]
+
+    reasons = []
+    keys_to_compare = [
+        "ecg_branch_type",
+        "fusion_type",
+        "ecg_length",
+        "n_leads",
+        "n_clinical",
+        "cnn_filters",
+        "lstm_hidden_size",
+        "fusion_hidden_dim",
+        "ecg_embedding_dim",
+    ]
+    for key in keys_to_compare:
+        if checkpoint_metadata.get(key) != current_metadata.get(key):
+            reasons.append(
+                f"{key}: checkpoint={checkpoint_metadata.get(key)!r}, current={current_metadata.get(key)!r}"
+            )
+    return reasons
+
+
 def _resume_from_checkpoint(
     checkpoint_path: Path,
     model: nn.Module,
     optimizer: optim.Optimizer,
     scaler,
 ):
+    current_architecture = _current_architecture_metadata(model)
+
+    if FORCE_FRESH_TRAIN:
+        print("[LOAD] FORCE_FRESH_TRAIN=True -> ignoring any previous checkpoint and starting from scratch.")
+        print("[LOAD] Training mode: fresh-started")
+        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history(), "fresh-started"
+
     if not checkpoint_path.exists():
-        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
+        print("[LOAD] No checkpoint found -> fresh start.")
+        print("[LOAD] Training mode: fresh-started")
+        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history(), "fresh-started"
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if checkpoint.get("model_name") != "late_fusion":
         print(f"[LOAD] Ignoring checkpoint not created by late_fusion: {checkpoint_path}")
         print("[LOAD] Starting fresh late-fusion training run.")
-        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
+        print("[LOAD] Training mode: fresh-started")
+        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history(), "fresh-started"
     if checkpoint.get("num_clinical_features") not in (None, NUM_CLINICAL_FEATURES):
         print(
             "[LOAD] Checkpoint clinical feature count "
@@ -160,7 +235,20 @@ def _resume_from_checkpoint(
             f"({NUM_CLINICAL_FEATURES})."
         )
         print("[LOAD] Starting fresh training run with the updated engineered feature set.")
-        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
+        print("[LOAD] Training mode: fresh-started")
+        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history(), "fresh-started"
+
+    architecture_mismatch_reasons = _architecture_mismatch_reasons(
+        checkpoint.get("architecture_metadata"),
+        current_architecture,
+    )
+    if architecture_mismatch_reasons:
+        print("[LOAD] Checkpoint architecture differs from the current model.")
+        for reason in architecture_mismatch_reasons:
+            print(f"[LOAD]   - {reason}")
+        print("[LOAD] Refusing to load incompatible checkpoint. Starting fresh with the new ECG architecture.")
+        print("[LOAD] Training mode: fresh-started")
+        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history(), "fresh-started"
 
     try:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -171,7 +259,8 @@ def _resume_from_checkpoint(
     except RuntimeError as exc:
         print(f"[LOAD] Checkpoint incompatible with current model: {exc}")
         print("[LOAD] Starting fresh training run with the updated architecture.")
-        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history()
+        print("[LOAD] Training mode: fresh-started")
+        return 1, 0.0, DEFAULT_THRESHOLD, _build_empty_history(), "fresh-started"
 
     history = checkpoint.get("history", _build_empty_history())
     best_val_f1 = float(checkpoint.get("best_val_f1", 0.0))
@@ -198,7 +287,8 @@ def _resume_from_checkpoint(
     print(f"[LOAD] Resuming from epoch {next_epoch} using {checkpoint_path}")
     print(f"[LOAD] Best Val F1 so far: {best_val_f1:.4f}")
     print(f"[LOAD] Best threshold so far: {best_threshold:.4f}")
-    return next_epoch, best_val_f1, best_threshold, history
+    print("[LOAD] Training mode: resumed")
+    return next_epoch, best_val_f1, best_threshold, history, "resumed"
 
 
 def main():
@@ -213,6 +303,8 @@ def main():
                         help="Disable CUDA automatic mixed precision")
     parser.add_argument("--weighted-sampling", action="store_true",
                         help="Use a weighted sampler for the training split")
+    parser.add_argument("--no-weighted-sampling", action="store_true",
+                        help="Disable weighted sampling even if enabled by config")
     parser.add_argument("--loss-mode", choices=["bce", "focal", "hybrid"], default="hybrid",
                         help="Training loss to use")
     parser.add_argument("--hybrid-bce-weight", type=float, default=0.5,
@@ -225,8 +317,16 @@ def main():
         raise ValueError("Hybrid loss weights must be non-negative.")
     if args.loss_mode == "hybrid" and (args.hybrid_bce_weight + args.hybrid_focal_weight) == 0:
         raise ValueError("Hybrid loss weights cannot both be zero.")
+    if args.weighted_sampling and args.no_weighted_sampling:
+        raise ValueError("Choose either --weighted-sampling or --no-weighted-sampling, not both.")
 
     seed_everything()
+
+    weighted_sampling = WEIGHTED_SAMPLING_DEFAULT
+    if args.weighted_sampling:
+        weighted_sampling = True
+    if args.no_weighted_sampling:
+        weighted_sampling = False
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amp_enabled = device.type == "cuda" and not args.disable_amp
@@ -246,7 +346,7 @@ def main():
         subset=args.subset,
         train_num_workers=args.num_workers,
         val_num_workers=args.val_workers,
-        weighted_sampling=args.weighted_sampling,
+        weighted_sampling=weighted_sampling,
     )
 
     print("\n" + "=" * 70)
@@ -257,7 +357,19 @@ def main():
         ecg_length=ECG_LENGTH,
         n_clinical=NUM_CLINICAL_FEATURES,
         dropout=DROPOUT_RATE,
+        cnn_filters=ECG_CNN_FILTERS,
+        lstm_hidden_size=ECG_LSTM_HIDDEN_SIZE,
+        fusion_hidden_dim=FUSION_HIDDEN_DIM,
     ).to(device)
+
+    architecture_metadata = _current_architecture_metadata(model)
+    print(f"[MODEL] ECG branch type  : {ECG_BRANCH_TYPE}")
+    print(f"[MODEL] Fusion type      : {FUSION_TYPE}")
+    print(f"[MODEL] ECG length       : {ECG_LENGTH}")
+    print(f"[MODEL] CNN filters      : {ECG_CNN_FILTERS}")
+    print(f"[MODEL] LSTM hidden size : {ECG_LSTM_HIDDEN_SIZE}")
+    print(f"[MODEL] Fusion hidden dim: {FUSION_HIDDEN_DIM}")
+    print(f"[MODEL] Dropout          : {DROPOUT_RATE}")
 
     total_params = sum(p.numel() for p in model.parameters())
     train_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -266,15 +378,29 @@ def main():
 
     criterion, loss_name = _build_criterion(args, pos_weight)
     print(f"[INFO] Loss: {loss_name}")
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    print(
+        f"[INFO] Aux supervision: fusion + {ECG_AUX_LOSS_WEIGHT:.2f}*ecg + "
+        f"{CLINICAL_AUX_LOSS_WEIGHT:.2f}*clinical"
+    )
+    print(f"[INFO] Base LR: {LEARNING_RATE:.6f}")
+    print(f"[INFO] ECG branch LR multiplier: {ECG_BRANCH_LR_MULTIPLIER:.2f}")
+    print(f"[INFO] Weighted sampling: {'enabled' if weighted_sampling else 'disabled'}")
+    print(f"[INFO] Early stopping patience: {EARLY_STOPPING_PATIENCE}")
+    print(
+        f"[INFO] Hard-negative focus: weight={HARD_NEGATIVE_WEIGHT:.2f} | "
+        f"power={HARD_NEGATIVE_POWER:.2f}"
+    )
+    optimizer = _build_optimizer(model)
 
     checkpoint_path = _latest_checkpoint_path()
     best_model_path = _best_model_path()
     resumed_from_checkpoint = checkpoint_path.exists()
-    start_epoch, best_val_f1, best_threshold, history = _resume_from_checkpoint(
+    start_epoch, best_val_f1, best_threshold, history, training_mode = _resume_from_checkpoint(
         checkpoint_path, model, optimizer, scaler
     )
+    resumed_from_checkpoint = training_mode == "resumed"
     active_threshold = best_threshold
+    epochs_without_improvement = 0
 
     print(f"\n{'Epoch':>5} | {'Tr Loss':>8} | {'Val Loss':>8} | "
           f"{'Tr Acc':>7} | {'Val Acc':>7} | {'Val P':>6} | {'Val R':>6} | {'Val F1':>6} | {'Th':>5}")
@@ -293,6 +419,8 @@ def main():
             threshold=active_threshold,
             amp_enabled=amp_enabled,
             scaler=scaler,
+            ecg_aux_weight=ECG_AUX_LOSS_WEIGHT,
+            clinical_aux_weight=CLINICAL_AUX_LOSS_WEIGHT,
         )
         val_loss, val_metrics = evaluate(
             model,
@@ -301,6 +429,8 @@ def main():
             device,
             auto_threshold=True,
             amp_enabled=amp_enabled,
+            ecg_aux_weight=ECG_AUX_LOSS_WEIGHT,
+            clinical_aux_weight=CLINICAL_AUX_LOSS_WEIGHT,
         )
         active_threshold = val_metrics["threshold"]
 
@@ -318,20 +448,41 @@ def main():
             f"{val_metrics['precision']:6.4f} | {val_metrics['recall']:6.4f} | {val_metrics['f1']:6.4f} | "
             f"{active_threshold:5.2f}"
         )
+        print(
+            f"         losses: fusion={val_metrics['fusion_loss']:.4f} | "
+            f"ecg={val_metrics['ecg_loss']:.4f} | clinical={val_metrics['clinical_loss']:.4f}"
+        )
+        print(
+            f"         hard-neg weights: mean={val_metrics['hard_negative_weight_mean']:.4f} | "
+            f"max={val_metrics['hard_negative_weight_max']:.4f}"
+        )
 
         completed_epochs = epoch
         if (not resumed_from_checkpoint and epoch == 1) or (val_metrics["f1"] > best_val_f1):
             best_val_f1 = val_metrics["f1"]
             best_threshold = active_threshold
             torch.save(model.state_dict(), best_model_path)
+            epochs_without_improvement = 0
             print(
                 f"         ^ New best Val F1 = {best_val_f1:.4f} at threshold {best_threshold:.4f}"
                 " -- best model updated"
+            )
+        else:
+            epochs_without_improvement += 1
+            print(
+                f"         no val F1 improvement for {epochs_without_improvement} epoch(s)"
             )
 
         _save_checkpoint(
             checkpoint_path, model, optimizer, scaler, epoch, best_val_f1, best_threshold, history, args
         )
+
+        if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
+            print(
+                f"[STOP] Early stopping triggered after {EARLY_STOPPING_PATIENCE} "
+                "epochs without validation F1 improvement."
+            )
+            break
 
     elapsed = time.time() - start_time
     print("-" * 86)
@@ -353,6 +504,8 @@ def main():
         threshold=best_threshold,
         return_outputs=True,
         amp_enabled=amp_enabled,
+        ecg_aux_weight=ECG_AUX_LOSS_WEIGHT,
+        clinical_aux_weight=CLINICAL_AUX_LOSS_WEIGHT,
     )
     final_train_loss, final_train_metrics = evaluate(
         model,
@@ -361,6 +514,8 @@ def main():
         device,
         threshold=best_threshold,
         amp_enabled=amp_enabled,
+        ecg_aux_weight=ECG_AUX_LOSS_WEIGHT,
+        clinical_aux_weight=CLINICAL_AUX_LOSS_WEIGHT,
     )
 
     metrics_payload = {
@@ -377,6 +532,13 @@ def main():
         "epochs_completed": completed_epochs,
         "target_epochs": NUM_EPOCHS,
         "learning_rate": LEARNING_RATE,
+        "ecg_branch_learning_rate": LEARNING_RATE * ECG_BRANCH_LR_MULTIPLIER,
+        "ecg_aux_loss_weight": ECG_AUX_LOSS_WEIGHT,
+        "clinical_aux_loss_weight": CLINICAL_AUX_LOSS_WEIGHT,
+        "weighted_sampling": weighted_sampling,
+        "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+        "hard_negative_weight": HARD_NEGATIVE_WEIGHT,
+        "hard_negative_power": HARD_NEGATIVE_POWER,
         "loss_name": loss_name,
         "history": {k: [round(v, 6) for v in vals] for k, vals in history.items()},
         "validation_outputs": {
@@ -403,6 +565,8 @@ def main():
             fieldnames=[
                 "split", "loss", "accuracy", "precision", "recall",
                 "f1", "auc", "average_precision", "threshold",
+                "fusion_loss", "ecg_loss", "clinical_loss",
+                "hard_negative_weight_mean", "hard_negative_weight_max",
             ],
         )
         writer.writeheader()

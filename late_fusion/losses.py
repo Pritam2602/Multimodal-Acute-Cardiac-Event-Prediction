@@ -8,12 +8,12 @@ class BCEWithLogitsLossWrapper(nn.Module):
         super().__init__()
         self.pos_weight = pos_weight
 
-    def forward(self, logits, targets):
+    def forward(self, logits, targets, reduction: str = "mean"):
         targets = targets.float()
         return F.binary_cross_entropy_with_logits(
             logits,
             targets,
-            reduction="mean",
+            reduction=reduction,
             pos_weight=self.pos_weight,
         )
 
@@ -25,7 +25,7 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
         self.pos_weight = pos_weight
 
-    def forward(self, logits, targets):
+    def forward(self, logits, targets, reduction: str = "mean"):
         targets = targets.float()
         bce = F.binary_cross_entropy_with_logits(
             logits,
@@ -35,6 +35,10 @@ class FocalLoss(nn.Module):
         )
         pt = torch.exp(-bce)
         loss = self.alpha * (1 - pt).pow(self.gamma) * bce
+        if reduction == "none":
+            return loss
+        if reduction == "sum":
+            return loss.sum()
         return loss.mean()
 
 
@@ -53,7 +57,7 @@ class HybridBCELoss(nn.Module):
         self.bce_loss = BCEWithLogitsLossWrapper(pos_weight=pos_weight)
         self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma, pos_weight=pos_weight)
 
-    def forward(self, logits, targets):
-        bce = self.bce_loss(logits, targets)
-        focal = self.focal_loss(logits, targets)
+    def forward(self, logits, targets, reduction: str = "mean"):
+        bce = self.bce_loss(logits, targets, reduction=reduction)
+        focal = self.focal_loss(logits, targets, reduction=reduction)
         return (self.bce_weight * bce) + (self.focal_weight * focal)

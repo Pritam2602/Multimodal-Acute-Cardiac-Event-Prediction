@@ -1,0 +1,49 @@
+{
+  "device": "cuda",
+  "summary_csv": "D:\\oldsys\\projects\\miniproj\\Multimodal-Acute-Cardiac-Event-Prediction\\late_fusion\\artifacts\\metrics\\branch_f1_scores.csv",
+  "predictions_csv": "D:\\oldsys\\projects\\miniproj\\Multimodal-Acute-Cardiac-Event-Prediction\\late_fusion\\artifacts\\metrics\\branch_predictions.csv",
+  "rows": [
+    {
+      "branch": "ecg",
+      "split": "validation",
+      "threshold": 0.765125,
+      "accuracy": 0.743739,
+      "precision": 0.400401,
+      "recall": 0.63044,
+      "f1": 0.489754,
+      "auc": 0.774315,
+      "average_precision": 0.497241,
+      "best_search_f1": 0.489754,
+      "n_samples": 21084,
+      "n_positive": 4113
+    },
+    {
+      "branch": "clinical",
+      "split": "validation",
+      "threshold": 0.799074,
+      "accuracy": 0.881237,
+      "precision": 0.691138,
+      "recall": 0.70727,
+      "f1": 0.699111,
+      "auc": 0.895485,
+      "average_precision": 0.742806,
+      "best_search_f1": 0.699111,
+      "n_samples": 21084,
+      "n_positive": 4113
+    },
+    {
+      "branch": "fusion",
+      "split": "validation",
+      "threshold": 0.800442,
+      "accuracy": 0.877537,
+      "precision": 0.675694,
+      "recall": 0.715779,
+      "f1": 0.695159,
+      "auc": 0.905582,
+      "average_precision": 0.75584,
+      "best_search_f1": 0.695159,
+      "n_samples": 21084,
+      "n_positive": 4113
+    }
+  ]
+}

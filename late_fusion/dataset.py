@@ -33,10 +33,12 @@ from .config import (
     MEMMAP_DIR,
     NUM_WORKERS,
     PREFETCH_FACTOR,
+    PREPROCESSED_ECG_DIR,
     PROJECT_ROOT,
     SEED,
     TARGET_COLUMN,
     TEST_SPLIT,
+    USE_PREPROCESSED_ECG,
     VAL_NUM_WORKERS,
     VAL_SPLIT,
 )
@@ -82,6 +84,14 @@ def _get_local_record_path(ecg_path: str, cache_dir: Path) -> str:
 def _is_cached(local_record_path: str) -> bool:
     """Check whether both WFDB files exist locally."""
     return os.path.exists(local_record_path + ".hea") and os.path.exists(local_record_path + ".dat")
+
+
+def _get_preprocessed_ecg_path(ecg_path: str, preprocessed_dir: Path = PREPROCESSED_ECG_DIR) -> Path:
+    return preprocessed_dir / f"{ecg_path}.npy"
+
+
+def _is_preprocessed_cached(ecg_path: str, preprocessed_dir: Path = PREPROCESSED_ECG_DIR) -> bool:
+    return _get_preprocessed_ecg_path(ecg_path, preprocessed_dir).exists()
 
 
 def _download_single_ecg(ecg_path: str, cache_dir: Path) -> bool:
@@ -150,10 +160,26 @@ def download_all_ecgs(
 
 def load_ecg_signal(record_path: str, target_length: int = ECG_LENGTH) -> np.ndarray:
     """
-    Load a single 12-lead ECG signal from a local WFDB record.
+    Load a single 12-lead ECG signal from a local WFDB record or preprocessed .npy.
 
     Returns an array of shape (12, target_length).
     """
+    record_path_obj = Path(record_path)
+    if record_path_obj.suffix.lower() == ".npy":
+        signal = np.load(record_path_obj).astype(np.float32, copy=False)
+        if signal.ndim != 2:
+            raise ValueError(f"Expected 2D ECG array in {record_path_obj}, got shape={signal.shape}")
+        if signal.shape[0] != ECG_LEADS:
+            raise ValueError(f"Expected {ECG_LEADS} leads in {record_path_obj}, got {signal.shape[0]}")
+
+        n_samples = signal.shape[1]
+        if n_samples >= target_length:
+            signal = signal[:, :target_length]
+        else:
+            pad = np.zeros((ECG_LEADS, target_length - n_samples), dtype=np.float32)
+            signal = np.hstack([signal, pad])
+        return signal.astype(np.float32, copy=False)
+
     record = wfdb.rdrecord(record_path)
     signal = record.p_signal
 
@@ -180,10 +206,24 @@ def load_ecg_signal(record_path: str, target_length: int = ECG_LENGTH) -> np.nda
 
 
 def _normalize_ecg(ecg: np.ndarray) -> np.ndarray:
+    ecg = np.asarray(ecg, dtype=np.float32)
     ecg = np.nan_to_num(ecg, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Protect against extreme spikes before z-scoring.
+    clip_scale = np.percentile(np.abs(ecg), 99.5, axis=1, keepdims=True)
+    clip_scale = np.where(clip_scale > 1e-6, clip_scale, 1.0)
+    ecg = np.clip(ecg, -5.0 * clip_scale, 5.0 * clip_scale)
+
     lead_mean = ecg.mean(axis=1, keepdims=True)
-    lead_std = ecg.std(axis=1, keepdims=True) + 1e-8
-    return ((ecg - lead_mean) / lead_std).astype(np.float32, copy=False)
+    lead_std = ecg.std(axis=1, keepdims=True)
+    safe_std = np.where(lead_std > 1e-6, lead_std, 1.0)
+    normalized = (ecg - lead_mean) / safe_std
+
+    flat_mask = (lead_std <= 1e-6).astype(np.float32)
+    if flat_mask.any():
+        normalized = normalized * (1.0 - flat_mask[:, None])
+
+    return normalized.astype(np.float32, copy=False)
 
 
 def _extract_subject_group_id(ecg_path: str) -> str:
@@ -285,37 +325,51 @@ def _log_group_prevalence(split_name: str, labels: np.ndarray, group_ids: np.nda
     )
 
 
-def _memmap_cache_path(local_paths: list[str]) -> Path:
+def _memmap_cache_path(source_paths: list[str], source_kind: str) -> Path:
     digest = hashlib.sha1(
-        "\n".join(local_paths).encode("utf-8"),
+        (f"{source_kind}|{ECG_LENGTH}|\n" + "\n".join(source_paths)).encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()[:16]
+    return MEMMAP_DIR / f"late_fusion_ecg_{source_kind}_{digest}.npy"
+
+
+def _legacy_wfdb_memmap_cache_path(source_paths: list[str]) -> Path:
+    digest = hashlib.sha1(
+        ("\n".join(source_paths)).encode("utf-8"),
         usedforsecurity=False,
     ).hexdigest()[:16]
     return MEMMAP_DIR / f"late_fusion_ecg_{digest}.npy"
 
 
-def build_ecg_memmap(local_paths: list[str]) -> Path:
+def build_ecg_memmap(source_paths: list[str], source_kind: str = "wfdb") -> Path:
     """
-    Convert downloaded WFDB records into a reusable read-only memmap.
+    Convert ECG sources into a reusable read-only memmap.
     """
     MEMMAP_DIR.mkdir(parents=True, exist_ok=True)
-    memmap_path = _memmap_cache_path(local_paths)
+    memmap_path = _memmap_cache_path(source_paths, source_kind)
 
     if memmap_path.exists():
         print(f"[ECG] Reusing memmap cache: {memmap_path}")
         return memmap_path
+
+    if source_kind == "wfdb":
+        legacy_memmap_path = _legacy_wfdb_memmap_cache_path(source_paths)
+        if legacy_memmap_path.exists():
+            print(f"[ECG] Reusing legacy memmap cache: {legacy_memmap_path}")
+            return legacy_memmap_path
 
     print(f"[ECG] Building memmap cache: {memmap_path}")
     memmap = np.lib.format.open_memmap(
         memmap_path,
         mode="w+",
         dtype=np.float32,
-        shape=(len(local_paths), ECG_LEADS, ECG_LENGTH),
+        shape=(len(source_paths), ECG_LEADS, ECG_LENGTH),
     )
 
     try:
-        for idx, record_path in enumerate(tqdm(local_paths, desc="Caching ECG memmap")):
+        for idx, source_path in enumerate(tqdm(source_paths, desc="Caching ECG memmap")):
             try:
-                ecg = load_ecg_signal(record_path)
+                ecg = load_ecg_signal(source_path)
             except Exception:
                 ecg = np.zeros((ECG_LEADS, ECG_LENGTH), dtype=np.float32)
             memmap[idx] = _normalize_ecg(ecg)
@@ -448,20 +502,27 @@ def load_and_prepare_data(
     print(f"[DATA] Clinical features: {clinical_raw.shape[1]} (cleaned)")
     print(f"[DATA] AMI prevalence: {labels.mean():.4%} ({int(labels.sum()):,} / {n_samples:,})")
 
-    download_all_ecgs(ecg_paths)
-    local_paths = [_get_local_record_path(path, ECG_CACHE_DIR) for path in ecg_paths]
+    if USE_PREPROCESSED_ECG:
+        ecg_source_paths = [str(_get_preprocessed_ecg_path(path)) for path in ecg_paths]
+        valid_mask = np.array([_is_preprocessed_cached(path) for path in ecg_paths], dtype=bool)
+        source_kind = "preprocessed"
+        print(f"[ECG] Using preprocessed ECG directory: {PREPROCESSED_ECG_DIR}")
+    else:
+        download_all_ecgs(ecg_paths)
+        ecg_source_paths = [_get_local_record_path(path, ECG_CACHE_DIR) for path in ecg_paths]
+        valid_mask = np.array([_is_cached(path) for path in ecg_source_paths], dtype=bool)
+        source_kind = "wfdb"
 
-    valid_mask = np.array([_is_cached(path) for path in local_paths], dtype=bool)
     if not valid_mask.all():
         n_before = n_samples
         valid_indices = np.flatnonzero(valid_mask)
-        local_paths = [local_paths[idx] for idx in valid_indices]
+        ecg_source_paths = [ecg_source_paths[idx] for idx in valid_indices]
         clinical_raw = clinical_raw[valid_mask]
         labels = labels[valid_mask]
         group_ids = group_ids[valid_mask]
         df = df.iloc[valid_indices].reset_index(drop=True)
         n_samples = len(labels)
-        print(f"[DATA] Filtered after ECG download: {n_before:,} -> {n_samples:,}")
+        print(f"[DATA] Filtered after ECG source check: {n_before:,} -> {n_samples:,}")
 
     train_pool_idx, test_idx, train_pool_groups, test_groups = _split_groups(
         group_ids,
@@ -480,7 +541,7 @@ def load_and_prepare_data(
 
     test_metadata = {
         "test_df": df.iloc[test_idx].reset_index(drop=True),
-        "test_local_paths": [local_paths[idx] for idx in test_idx],
+        "test_local_paths": [ecg_source_paths[idx] for idx in test_idx],
         "test_clinical": clinical_standardized[test_idx],
         "test_labels": labels[test_idx],
         "col_mean": col_mean,
@@ -500,7 +561,7 @@ def load_and_prepare_data(
     _log_group_prevalence("Validation", labels[val_idx], group_ids[val_idx])
     _log_group_prevalence("Test", labels[test_idx], group_ids[test_idx])
 
-    ecg_memmap_path = build_ecg_memmap(local_paths)
+    ecg_memmap_path = build_ecg_memmap(ecg_source_paths, source_kind=source_kind)
 
     train_ds = MultimodalCardiacDataset(
         clinical_standardized[train_idx],
@@ -563,6 +624,7 @@ def load_and_prepare_data(
         f"batch_size={batch_size} | "
         f"pin_memory={torch.cuda.is_available()} | "
         f"memmap={ecg_memmap_path.name} | "
+        f"source_kind={source_kind} | "
         f"prefetch_factor={PREFETCH_FACTOR if effective_train_workers > 0 or effective_val_workers > 0 else 'n/a'}"
     )
 
