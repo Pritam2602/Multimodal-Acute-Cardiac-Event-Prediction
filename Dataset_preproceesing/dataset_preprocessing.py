@@ -168,6 +168,54 @@ def create_ami_flag(diag: pd.DataFrame) -> pd.Series:
     return (icd9_acute_mi | icd10_acute_mi).astype(int)
 
 
+def build_comorbidity_features(diag: pd.DataFrame) -> pd.DataFrame:
+    """
+    Extract specific comorbidities (CKD, HF, Sepsis, PE, AFib, Diabetes) 
+    from ICD codes to help the model distinguish AMI from other conditions 
+    that elevate troponin.
+    """
+    code = diag['icd_code'].astype(str).str.strip().str.upper()
+    version = diag['icd_version']
+
+    # Chronic Kidney Disease (N18.x)
+    ckd = ((version == 10) & code.str.startswith('N18')) | ((version == 9) & code.str.startswith('585'))
+    
+    # Heart Failure (I50.x)
+    hf = ((version == 10) & code.str.startswith('I50')) | ((version == 9) & code.str.startswith('428'))
+    
+    # Sepsis/SIRS (R65.x, A41.x)
+    sepsis = ((version == 10) & (code.str.startswith('R65') | code.str.startswith('A41'))) | \
+             ((version == 9) & (code.str.startswith('9959') | code.str.startswith('038')))
+             
+    # Pulmonary Embolism (I26.x)
+    pe = ((version == 10) & code.str.startswith('I26')) | ((version == 9) & code.str.startswith('4151'))
+    
+    # Atrial Fibrillation (I48.x)
+    afib = ((version == 10) & code.str.startswith('I48')) | ((version == 9) & code.str.startswith('4273'))
+    
+    # Type 2 Diabetes (E11.x)
+    diabetes = ((version == 10) & code.str.startswith('E11')) | ((version == 9) & code.str.startswith('250'))
+
+    diag_feats = pd.DataFrame({
+        'hadm_id': diag['hadm_id'],
+        'has_ckd': ckd.astype(int),
+        'has_hf': hf.astype(int),
+        'has_sepsis': sepsis.astype(int),
+        'has_pe': pe.astype(int),
+        'has_afib': afib.astype(int),
+        'has_diabetes': diabetes.astype(int),
+    })
+
+    # Group by admission
+    grouped = diag_feats.groupby('hadm_id').max().reset_index()
+    grouped['comorbidity_count'] = (
+        grouped['has_ckd'] + grouped['has_hf'] + grouped['has_sepsis'] + 
+        grouped['has_pe'] + grouped['has_afib'] + grouped['has_diabetes']
+    )
+    
+    return grouped
+
+
 def build_lab_timing_features(hadm_ids: pd.Series) -> pd.DataFrame:
     """
     Build first-24h lab features from labevents.
@@ -513,9 +561,14 @@ if 'hadm_id' in df.columns:
     # Aggregate per admission
     ami_labels = diag.groupby('hadm_id')['AMI_flag'].max().reset_index()
     ami_labels = ami_labels.rename(columns={'AMI_flag': 'AMI'})
+    
+    # Extract comorbidity features
+    print("Extracting comorbidity features...")
+    comorbidity_features = build_comorbidity_features(diag)
 else:
     print("hadm_id unavailable; using existing AMI label.")
     ami_labels = None
+    comorbidity_features = None
 
 # ==========================================
 # MERGE AMI LABEL
@@ -528,6 +581,12 @@ if ami_labels is not None:
     df = df.merge(ami_labels, on='hadm_id', how='left')
     if old_ami_counts is not None:
         print("Previous AMI distribution:", old_ami_counts)
+
+    if comorbidity_features is not None:
+        print("Merging comorbidity features...")
+        df = df.merge(comorbidity_features, on='hadm_id', how='left')
+        comorb_cols = ['has_ckd', 'has_hf', 'has_sepsis', 'has_pe', 'has_afib', 'has_diabetes', 'comorbidity_count']
+        df[comorb_cols] = df[comorb_cols].fillna(0)
 
 df['AMI'] = df['AMI'].fillna(0)
 

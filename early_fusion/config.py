@@ -17,9 +17,7 @@ METRICS_DIR   = ARTIFACT_ROOT / "metrics"
 DB_PATH       = ARTIFACT_ROOT / "predictions.db"
 
 # ── Clinical feature columns (from preprocessed parquet) ─────────────────
-# NOTE: 15 zero-variance features were removed (all values = 0 across
-# the entire dataset).  See analysis/error_analysis.py for verification.
-# Two new features are computed on-the-fly in dataset.py:
+# Two engineered features are computed on-the-fly in dataset.py:
 #   troponin_delta_24h        — troponin rise (max - first in 24h)
 #   troponin_creatinine_ratio — troponin normalised by kidney function
 CLINICAL_FEATURES = [
@@ -41,10 +39,33 @@ CLINICAL_FEATURES = [
     "Potassium",
     "Potassium_low",
     "Potassium_high",
+    # Missing-value indicator flags
+    "Troponin_T_missing",
+    "Creatinine_missing",
+    "Sodium_missing",
+    "Potassium_missing",
+    "Heart_Rate_missing",
+    "Respiratory_Rate_missing",
+    "anchor_age_missing",
     # First-24h lab timing features
     "troponin_first_24h",
     "troponin_max_24h",
     "troponin_count_24h",
+    # Serial Troponin Tracking (Phase 4)
+    "troponin_count",
+    "troponin_initial",
+    "troponin_peak",
+    "troponin_delta",
+    "troponin_velocity",
+    "rise_fall_slope",
+    "time_to_peak_hours",
+    "normalized_delta",
+    "trop_dyn_slope",
+    "trop_dyn_accel",
+    "trop_dyn_rise_ratio",
+    "trop_dyn_delta",
+    "trop_peak_baseline_ratio",
+    "trop_fold_rise",
     "hours_admit_to_first_troponin",
     "troponin_24h_missing",
     "creatinine_max_24h",
@@ -55,6 +76,7 @@ CLINICAL_FEATURES = [
     "ecg_within_first_24h",
     "ecg_before_admission",
     "ecg_after_discharge",
+    "ecg_time_missing",
     # Hospital stay info
     "num_diagnoses",
     "los",
@@ -69,15 +91,37 @@ CLINICAL_FEATURES = [
     "RR_interval",
     "HR_from_RR_interval",
     "HR_RR_disagreement",
+    # ECG-machine invalid-value flags
+    "PR_interval_invalid",
+    "QRS_duration_invalid",
+    "QT_interval_invalid",
+    "QTc_invalid",
+    "P_axis_invalid",
+    "QRS_axis_invalid",
+    "T_axis_invalid",
+    "RR_interval_invalid",
     # ECG-machine abnormality flags
     "QRS_wide",
     "QTc_prolonged",
     "PR_prolonged",
     "QRS_axis_deviation",
     "T_axis_abnormal",
+    # Comorbidity features (hard negative mining)
+    "has_ckd",
+    "has_hf",
+    "has_sepsis",
+    "has_pe",
+    "has_afib",
+    "has_diabetes",
+    "comorbidity_count",
     # ── Engineered features (computed on-the-fly in dataset.py) ──────────
     "troponin_delta_24h",
     "troponin_creatinine_ratio",
+    "troponin_rise_ratio",
+    "troponin_ecg_time_gap",
+    "troponin_before_ecg",
+    "acuity_score",
+    "hours_since_baseline_ecg",
 ]
 
 # ── Data filtering (error-analysis-driven) ───────────────────────────────

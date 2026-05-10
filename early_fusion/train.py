@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import torch.optim as optim
 
 from .config import (
@@ -213,7 +214,7 @@ def main():
                         help="AdamW weight decay")
     parser.add_argument("--dropout", type=float, default=DROPOUT_RATE,
                         help="Dropout rate for the model")
-    parser.add_argument("--loss-name", choices=["focal", "bce"], default=LOSS_NAME,
+    parser.add_argument("--loss-name", choices=["focal", "bce", "ohem_focal"], default=LOSS_NAME,
                         help="Loss function to use")
     parser.add_argument("--focal-alpha", type=float, default=FOCAL_LOSS_ALPHA,
                         help="Alpha parameter for focal loss")
@@ -223,8 +224,11 @@ def main():
                         help="Multiply the training positive-class weight by this factor")
     parser.add_argument("--exclude-clinical-features", type=str, default=None,
                         help="Comma-separated clinical features to omit for an ablation run")
-    parser.add_argument("--model-arch", choices=["baseline", "resnet", "filmed"], default="baseline",
-                        help="ECG feature extractor architecture")
+    parser.add_argument("--model-arch", type=str, default="baseline",
+                        choices=["baseline", "resnet", "filmed", "crossattn", "clinical_gated", "clinical_only", "siamese_delta", "siamese_crossattn"],
+                        help="Neural network architecture to use.")
+    parser.add_argument("--mixup-alpha", type=float, default=0.0,
+                        help="Mixup alpha (0=off, 0.4=recommended). Interpolates training samples.")
     parser.add_argument("--early-stopping-patience", type=int, default=EARLY_STOPPING_PATIENCE,
                         help="Stop after this many non-improving epochs; set 0 to disable")
     parser.add_argument("--early-stopping-min-delta", type=float, default=EARLY_STOPPING_MIN_DELTA,
@@ -235,8 +239,12 @@ def main():
                         help="Optional subdirectory name under artifacts/runs for this experiment")
     parser.add_argument("--label-smoothing", type=float, default=LABEL_SMOOTHING,
                         help="Label smoothing factor (0=off, 0.05=default)")
-    parser.add_argument("--scheduler", choices=["onecycle", "cosine"], default=SCHEDULER_TYPE,
+    parser.add_argument("--scheduler", choices=["onecycle", "cosine", "cosine_warmup"], default=SCHEDULER_TYPE,
                         help="LR scheduler type")
+    parser.add_argument("--entropy-lambda", type=float, default=0.0,
+                        help="Multiplier for the Attention Entropy Constraint penalty (e.g. 0.1)")
+    parser.add_argument("--contrastive-lambda", type=float, default=0.0,
+                        help="Multiplier for False-Positive Adversarial Separation loss (e.g. 0.5)")
     parser.add_argument("--ecg-time-window", type=int, default=ECG_TIME_WINDOW_HOURS,
                         help="Keep ECGs within ±N hours of admission (0=off, recommended=72)")
     parser.add_argument("--max-ecgs-per-patient", type=int, default=MAX_ECGS_PER_PATIENT,
@@ -246,12 +254,13 @@ def main():
     seed_everything()
 
     excluded_features = _parse_excluded_features(args.exclude_clinical_features)
-    unknown_excluded = [feat for feat in excluded_features if feat not in CLINICAL_FEATURES]
+    unknown_excluded = [feat for feat in excluded_features if feat not in CLINICAL_FEATURES and feat != "ALL"]
     if unknown_excluded:
         raise ValueError(f"Unknown --exclude-clinical-features values: {unknown_excluded}")
-    selected_clinical_features = [feat for feat in CLINICAL_FEATURES if feat not in set(excluded_features)]
-    if not selected_clinical_features:
-        raise ValueError("At least one clinical feature must remain after exclusion")
+    if "ALL" in excluded_features:
+        selected_clinical_features = []
+    else:
+        selected_clinical_features = [feat for feat in CLINICAL_FEATURES if feat not in set(excluded_features)]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Device: {device}")
@@ -340,6 +349,11 @@ def main():
             div_factor=25,
             final_div_factor=1000,
         )
+    elif args.scheduler == "cosine_warmup":
+        warmup_epochs = 3
+        warmup_scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
+        cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs - warmup_epochs, eta_min=1e-6)
+        scheduler = optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs])
     else:
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
@@ -366,12 +380,18 @@ def main():
     # OneCycleLR is passed into engine for per-batch stepping; cosine stays epoch-level
     batch_scheduler = scheduler if args.scheduler == "onecycle" else None
 
+    ema_avg = get_ema_multi_avg_fn(0.99)
+    ema_model = AveragedModel(model, multi_avg_fn=ema_avg)
+
     for epoch in range(start_epoch, args.epochs + 1):
         train_loss, train_metrics = train_one_epoch(
             model, train_loader, criterion, optimizer, device,
             threshold=active_threshold, scaler=scaler,
             label_smoothing=args.label_smoothing,
             scheduler=batch_scheduler,
+            mixup_alpha=args.mixup_alpha,
+            entropy_lambda=args.entropy_lambda,
+            contrastive_lambda=args.contrastive_lambda
         )
         val_loss, val_metrics = evaluate(
             model, val_loader, criterion, device, auto_threshold=True
@@ -413,6 +433,8 @@ def main():
         # Only step epoch-level schedulers here (OneCycleLR steps per-batch in engine)
         if args.scheduler != "onecycle":
             scheduler.step()
+
+        ema_model.update_parameters(model)
 
         _save_checkpoint(
             checkpoint_path,
@@ -456,12 +478,23 @@ def main():
         model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
         print(f"[LOAD] Best model restored from {best_model_path}")
 
+    ema_model_path = models_dir / "ema_model.pth"
+    torch.save(ema_model.module.state_dict(), ema_model_path)
+    print(f"[SAVE] Final EMA model saved to {ema_model_path}")
+
+    print("\n--- Evaluating Best Model ---")
     final_val_loss, final_val_metrics, final_val_outputs = evaluate(
         model, val_loader, criterion, device, threshold=best_threshold, return_outputs=True
     )
     final_train_loss, final_train_metrics = evaluate(
         model, train_loader, criterion, device, threshold=best_threshold
     )
+
+    print("\n--- Evaluating EMA Model ---")
+    ema_val_loss, ema_val_metrics = evaluate(
+        ema_model, val_loader, criterion, device, auto_threshold=True
+    )
+    print(f"[EMA] Val F1: {ema_val_metrics['f1']:.4f} @ Threshold: {ema_val_metrics['threshold']:.4f}")
 
     metrics_payload = {
         "train": {

@@ -1,0 +1,104 @@
+{
+  "run_dir": "early_fusion\\artifacts\\runs\\strict_ami_grouped_early_focal",
+  "metrics_threshold": 0.687755,
+  "best_curve_threshold": 0.687755,
+  "best_curve_f1": 0.7153004848348179,
+  "counts": {
+    "TP": 3172,
+    "FP": 1598,
+    "TN": 15970,
+    "FN": 927
+  },
+  "top_fp_features_vs_tn": [
+    {
+      "feature": "age_x_log1p_Troponin_T",
+      "FP_mean": 27.59601708814067,
+      "TN_mean": 5.539961113406978,
+      "FP_minus_TN": 22.05605597473369
+    },
+    {
+      "feature": "QT_interval",
+      "FP_mean": 395.6070087609512,
+      "TN_mean": 387.5599248591108,
+      "FP_minus_TN": 8.04708390184038
+    },
+    {
+      "feature": "QTc",
+      "FP_mean": 462.93891544535506,
+      "TN_mean": 455.19699124703544,
+      "FP_minus_TN": 7.741924198319623
+    },
+    {
+      "feature": "QRS_duration",
+      "FP_mean": 106.56070087609513,
+      "TN_mean": 101.50425798371947,
+      "FP_minus_TN": 5.056442892375657
+    },
+    {
+      "feature": "RR_interval",
+      "FP_mean": 744.526282853567,
+      "TN_mean": 740.0644333124609,
+      "FP_minus_TN": 4.461849541106062
+    },
+    {
+      "feature": "PR_interval",
+      "FP_mean": 160.87046307884856,
+      "TN_mean": 156.79561678146524,
+      "FP_minus_TN": 4.074846297383317
+    },
+    {
+      "feature": "anchor_age",
+      "FP_mean": 68.12077596996245,
+      "TN_mean": 64.25046963055729,
+      "FP_minus_TN": 3.870306339405161
+    },
+    {
+      "feature": "num_diagnoses",
+      "FP_mean": 23.593241551939926,
+      "TN_mean": 20.546649968691295,
+      "FP_minus_TN": 3.046591583248631
+    },
+    {
+      "feature": "T_axis",
+      "FP_mean": 39.1639549436796,
+      "TN_mean": 36.449530369442705,
+      "FP_minus_TN": 2.7144245742368938
+    },
+    {
+      "feature": "QRS_axis",
+      "FP_mean": 14.631414267834794,
+      "TN_mean": 13.536756418284282,
+      "FP_minus_TN": 1.0946578495505115
+    },
+    {
+      "feature": "Troponin_T_high",
+      "FP_mean": 0.9780976220275344,
+      "TN_mean": 0.057983719474013776,
+      "FP_minus_TN": 0.9201139025535205
+    },
+    {
+      "feature": "HR_RR_disagreement",
+      "FP_mean": 11.761503942065096,
+      "TN_mean": 12.672519119444415,
+      "FP_minus_TN": -0.9110151773793191
+    },
+    {
+      "feature": "HR_from_RR_interval",
+      "FP_mean": 86.52442426954958,
+      "TN_mean": 87.32680382182483,
+      "FP_minus_TN": -0.8023795522752408
+    },
+    {
+      "feature": "Troponin_T",
+      "FP_mean": 0.6431062264320381,
+      "TN_mean": 0.09284725055854841,
+      "FP_minus_TN": 0.5502589758734897
+    },
+    {
+      "feature": "Heart_Rate",
+      "FP_mean": 86.41301627033792,
+      "TN_mean": 86.79812147777082,
+      "FP_minus_TN": -0.38510520743290044
+    }
+  ]
+}

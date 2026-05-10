@@ -1,0 +1,62 @@
+{
+  "folds": 3,
+  "epochs": 15,
+  "loss_name": "focal",
+  "learning_rate": 0.001,
+  "weight_decay": 0.0001,
+  "dropout": 0.3,
+  "weighted_sampling": false,
+  "pos_weight_scale": 1.0,
+  "focal_alpha": 1.0,
+  "focal_gamma": 2.0,
+  "mean_f1": 0.713223,
+  "std_f1": 0.005609,
+  "mean_auc": 0.905328,
+  "std_auc": 0.002502,
+  "mean_average_precision": 0.764504,
+  "std_average_precision": 0.00923,
+  "rows": [
+    {
+      "fold": 1,
+      "best_epoch": 4,
+      "val_loss": 0.318559,
+      "accuracy": 0.891988,
+      "precision": 0.723915,
+      "recall": 0.693908,
+      "f1": 0.708594,
+      "auc": 0.903909,
+      "average_precision": 0.756896,
+      "threshold": 0.687755,
+      "pos_weight": 4.236924,
+      "effective_pos_weight": 4.236924
+    },
+    {
+      "fold": 2,
+      "best_epoch": 5,
+      "val_loss": 0.319668,
+      "accuracy": 0.891186,
+      "precision": 0.725164,
+      "recall": 0.695379,
+      "f1": 0.709959,
+      "auc": 0.90323,
+      "average_precision": 0.759122,
+      "threshold": 0.720408,
+      "pos_weight": 4.268447,
+      "effective_pos_weight": 4.268447
+    },
+    {
+      "fold": 3,
+      "best_epoch": 6,
+      "val_loss": 0.30686,
+      "accuracy": 0.892124,
+      "precision": 0.709973,
+      "recall": 0.732615,
+      "f1": 0.721116,
+      "auc": 0.908844,
+      "average_precision": 0.777493,
+      "threshold": 0.736735,
+      "pos_weight": 4.252193,
+      "effective_pos_weight": 4.252193
+    }
+  ]
+}

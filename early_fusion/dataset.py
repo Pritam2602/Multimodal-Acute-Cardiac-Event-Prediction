@@ -326,20 +326,11 @@ class MultimodalCardiacDataset(Dataset):
 
     The memmap is opened lazily in each DataLoader worker process to avoid
     pickling issues on Windows multiprocessing.
-
-    Parameters
-    ----------
-    memmap_path   : Path — file path to the ECG memmap
-    memmap_shape  : tuple — (n_total_records, 12, 5000)
-    ecg_indices   : np.ndarray — global indices into the memmap for this split
-    clinical_data : np.ndarray of shape (N, num_features)
-    labels        : np.ndarray of shape (N,)
-    augment       : bool — whether to apply ECG augmentation (training only)
     """
-
     def __init__(self, memmap_path, memmap_shape: tuple,
                  ecg_indices: np.ndarray, clinical_data: np.ndarray,
-                 labels: np.ndarray, augment: bool = False):
+                 labels: np.ndarray, augment: bool = False,
+                 ecg_base_memmap_path=None, has_baseline: np.ndarray = None):
         self.memmap_path   = str(memmap_path)
         self.memmap_shape  = memmap_shape
         self.ecg_indices   = np.asarray(ecg_indices)
@@ -347,6 +338,10 @@ class MultimodalCardiacDataset(Dataset):
         self.labels        = torch.tensor(labels, dtype=torch.float32)
         self.augment       = augment
         self._ecg_memmap   = None  # opened lazily per worker
+        
+        self.ecg_base_memmap_path = str(ecg_base_memmap_path) if ecg_base_memmap_path else None
+        self.has_baseline = torch.tensor(has_baseline, dtype=torch.float32) if has_baseline is not None else None
+        self._ecg_base_memmap = None
 
     def _get_memmap(self):
         """Open the memmap lazily — each worker gets its own file handle."""
@@ -357,33 +352,62 @@ class MultimodalCardiacDataset(Dataset):
             )
         return self._ecg_memmap
 
+    def _get_base_memmap(self):
+        if self._ecg_base_memmap is None and self.ecg_base_memmap_path is not None:
+            self._ecg_base_memmap = np.memmap(
+                self.ecg_base_memmap_path, dtype=np.float32, mode='r',
+                shape=self.memmap_shape,
+            )
+        return self._ecg_base_memmap
+
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
         # Fast memmap read — microseconds instead of ~10ms per wfdb call
         mmap = self._get_memmap()
-        ecg = np.array(mmap[self.ecg_indices[idx]])  # copy to writable array
+        memmap_idx = self.ecg_indices[idx]
+        ecg = np.array(mmap[memmap_idx])  # copy to writable array
+
+        # Baseline ECG
+        base_mmap = self._get_base_memmap()
+        if base_mmap is not None and self.has_baseline is not None:
+            ecg_base = np.array(base_mmap[memmap_idx])
+            has_base = self.has_baseline[idx]
+        else:
+            ecg_base = np.zeros_like(ecg)
+            has_base = torch.tensor(0.0, dtype=torch.float32)
 
         # Apply augmentation during training
         if self.augment:
             ecg = _augment_ecg(ecg)
 
         ecg_tensor = torch.tensor(ecg, dtype=torch.float32)
-        return ecg_tensor, self.clinical_data[idx], self.labels[idx]
+        ecg_base_tensor = torch.tensor(ecg_base, dtype=torch.float32)
+        
+        return ecg_tensor, self.clinical_data[idx], self.labels[idx], ecg_base_tensor, has_base
 
 
-def _build_weighted_sampler(labels: np.ndarray) -> WeightedRandomSampler | None:
+def _build_weighted_sampler(labels: np.ndarray, hard_negative_mask: np.ndarray | None = None) -> WeightedRandomSampler | None:
     labels = np.asarray(labels, dtype=np.int64)
     if labels.size == 0:
         return None
 
-    class_counts = np.bincount(labels, minlength=2).astype(np.float64)
-    if np.any(class_counts == 0):
-        return None
+    if hard_negative_mask is None:
+        class_counts = np.bincount(labels, minlength=2).astype(np.float64)
+        if np.any(class_counts == 0):
+            return None
+        class_weights = 1.0 / class_counts
+        sample_weights = class_weights[labels]
+    else:
+        sample_weights = np.ones_like(labels, dtype=np.float64)
+        # Class 0 (Negatives): default weight 0.2
+        sample_weights[labels == 0] = 0.2
+        # Class 0 Hard Negatives: weight 2.0
+        sample_weights[(labels == 0) & hard_negative_mask] = 2.0
+        # Class 1 (Positives): weight 1.0
+        sample_weights[labels == 1] = 1.0
 
-    class_weights = 1.0 / class_counts
-    sample_weights = class_weights[labels]
     return WeightedRandomSampler(
         weights=torch.as_tensor(sample_weights, dtype=torch.double),
         num_samples=len(labels),
@@ -608,7 +632,15 @@ def make_split_dataloaders(
     effective_train_workers = NUM_WORKERS if train_num_workers is None else train_num_workers
     effective_val_workers = VAL_NUM_WORKERS if val_num_workers is None else val_num_workers
 
-    train_sampler = _build_weighted_sampler(labels[train_idx]) if weighted_sampling else None
+    train_sampler = None
+    if weighted_sampling:
+        df = prepared.get("df")
+        if df is not None and "comorbidity_count" in df.columns and "Troponin_T_high" in df.columns:
+            # hard negative: troponin > 0.1 AND has comorbidities
+            hard_negative_mask = (df["Troponin_T_high"].values == 1) & (df["comorbidity_count"].values > 0)
+            train_sampler = _build_weighted_sampler(labels[train_idx], hard_negative_mask[train_idx])
+        else:
+            train_sampler = _build_weighted_sampler(labels[train_idx])
     train_loader = _make_dataloader(
         train_ds,
         shuffle=True,
@@ -653,8 +685,34 @@ def _compute_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
         df["troponin_delta_24h"] = (
             df["troponin_max_24h"] - df["troponin_first_24h"]
         ).fillna(0.0)
+        
+        # Multiplicative rise
+        df["troponin_rise_ratio"] = (
+            df["troponin_max_24h"] / df["troponin_first_24h"].clip(lower=0.001)
+        ).fillna(1.0)
     else:
         df["troponin_delta_24h"] = 0.0
+        df["troponin_rise_ratio"] = 1.0
+
+    # Troponin-to-ECG timing alignment
+    if "hours_admit_to_first_troponin" in df.columns and "hours_admit_to_ecg" in df.columns:
+        # Avoid treating 999 (missing) as valid timing gaps
+        valid_timing = (df["hours_admit_to_first_troponin"] < 900) & (df["hours_admit_to_ecg"] < 900)
+        
+        df["troponin_ecg_time_gap"] = np.where(
+            valid_timing,
+            np.abs(df["hours_admit_to_first_troponin"] - df["hours_admit_to_ecg"]),
+            999.0
+        )
+        
+        df["troponin_before_ecg"] = np.where(
+            valid_timing,
+            (df["hours_admit_to_first_troponin"] < df["hours_admit_to_ecg"]).astype(int),
+            0
+        )
+    else:
+        df["troponin_ecg_time_gap"] = 999.0
+        df["troponin_before_ecg"] = 0
 
     # Troponin normalised by kidney function
     if "log1p_Troponin_T" in df.columns and "Creatinine" in df.columns:
@@ -663,6 +721,20 @@ def _compute_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
         ).fillna(0.0)
     else:
         df["troponin_creatinine_ratio"] = 0.0
+
+    # Clinical Acuity Score (composite risk indicator)
+    req_cols = ["Troponin_T_high", "Creatinine_high", "QTc_prolonged", "QRS_wide", "Heart_Rate", "Respiratory_Rate"]
+    if all(c in df.columns for c in req_cols):
+        df["acuity_score"] = (
+            df["Troponin_T_high"] + 
+            df["Creatinine_high"] + 
+            df["QTc_prolonged"] + 
+            df["QRS_wide"] + 
+            (df["Heart_Rate"] > 100).astype(int) + 
+            (df["Respiratory_Rate"] > 22).astype(int)
+        ).fillna(0.0)
+    else:
+        df["acuity_score"] = 0.0
 
     return df
 
@@ -777,6 +849,10 @@ def load_and_prepare_data(
     clinical_df = df[selected_features].copy()
     labels      = df[TARGET_COLUMN].values.astype(np.float32)
     ecg_paths   = df["ecg_path"].tolist()
+    
+    # ── Siamese Baseline ECG Paths ──────────────────────────────────────
+    has_baseline_mask = df["has_baseline_ecg"].values.astype(np.float32) if "has_baseline_ecg" in df.columns else np.zeros(len(df), dtype=np.float32)
+    base_ecg_paths = df["baseline_ecg_path"].tolist() if "baseline_ecg_path" in df.columns else [None]*len(df)
 
     # ── Clean clinical features (sentinel / extreme values) ──────────────
     # Many ECG machine columns contain sentinel values like -29999, 32767,
@@ -852,12 +928,56 @@ def load_and_prepare_data(
             local_paths  = [local_paths[i] for i in valid_indices]
             clinical_raw = clinical_raw[valid_mask]
             labels       = labels[valid_mask]
+            has_baseline_mask = has_baseline_mask[valid_mask]
+            base_ecg_paths = [base_ecg_paths[i] for i in valid_indices]
             df           = df.iloc[valid_indices].reset_index(drop=True)
             n_samples    = len(labels)
             print(f"[DATA] Filtered: {n_before:,} -> {n_samples:,} (removed {n_before - n_samples:,} failed)")
 
         # Build memory-mapped ECG cache (one-time)
         ecg_memmap_path, ecg_memmap_shape = _build_ecg_memmap(local_paths)
+
+    # ── Baseline ECG Memmap ──────────────────────────────────────────────────
+    candidate_base_memmap = ECG_CACHE_DIR / f"base_dataset_ecg_{n_samples}.dat"
+    ecg_base_memmap_path = None
+    if "has_baseline_ecg" in df.columns:
+        if candidate_base_memmap.exists() and candidate_base_memmap.stat().st_size == expected_bytes:
+            print(f"[ECG] Baseline Memmap cache valid")
+            ecg_base_memmap_path = candidate_base_memmap
+        else:
+            print("[ECG] Building Baseline ECG Memmap...")
+            valid_base_paths = [p for p in base_ecg_paths if p is not None]
+            download_all_ecgs(valid_base_paths)
+            
+            # Map None paths to a dummy string so _build_ecg_memmap gracefully handles them
+            local_base_paths = []
+            for p in base_ecg_paths:
+                if p is not None:
+                    local_base_paths.append(_get_local_record_path(p, ECG_CACHE_DIR))
+                else:
+                    local_base_paths.append(None)
+            
+            # Custom memmap build for baselines (filling None with zeros)
+            base_shape = (n_samples, ECG_LEADS, ECG_LENGTH)
+            base_memmap = np.memmap(candidate_base_memmap, dtype=np.float32, mode='w+', shape=base_shape)
+            
+            for i, p in enumerate(tqdm(local_base_paths, desc="Writing Base Memmap")):
+                if p is not None and _is_cached(p):
+                    try:
+                        sig = load_ecg_signal(p)
+                        # Z-score exactly like admit ECG
+                        sig_mean = np.mean(sig)
+                        sig_std = np.std(sig) + 1e-8
+                        sig = (sig - sig_mean) / sig_std
+                        base_memmap[i] = sig
+                    except Exception:
+                        base_memmap[i] = np.zeros((ECG_LEADS, ECG_LENGTH))
+                else:
+                    base_memmap[i] = np.zeros((ECG_LEADS, ECG_LENGTH))
+            
+            base_memmap.flush()
+            del base_memmap
+            ecg_base_memmap_path = candidate_base_memmap
 
     # ══════════════════════════════════════════════════════════════════════
     # DATA QUALITY FILTERS (error-analysis-driven)
@@ -873,6 +993,7 @@ def load_and_prepare_data(
     if len(indices) < n_samples:
         labels_filtered = labels[indices]
         clinical_filtered = clinical_raw[indices]
+        has_baseline_filtered = has_baseline_mask[indices]
         groups_filtered = groups[indices] if groups is not None else None
         # Re-index: after filtering, indices become 0..len-1 for the split,
         # but we keep the original memmap indices for ECG access.
@@ -883,6 +1004,7 @@ def load_and_prepare_data(
     else:
         labels_filtered = labels
         clinical_filtered = clinical_raw
+        has_baseline_filtered = has_baseline_mask
         groups_filtered = groups
         original_memmap_indices = indices.copy()
         n_filtered = n_samples
@@ -958,11 +1080,15 @@ def load_and_prepare_data(
         ecg_memmap_path, ecg_memmap_shape,
         train_memmap_idx, clinical_standardized[train_idx], labels_filtered[train_idx],
         augment=True,   # ECG augmentation for training only
+        ecg_base_memmap_path=ecg_base_memmap_path,
+        has_baseline=has_baseline_filtered[train_idx],
     )
     val_ds = MultimodalCardiacDataset(
         ecg_memmap_path, ecg_memmap_shape,
         val_memmap_idx, clinical_standardized[val_idx], labels_filtered[val_idx],
         augment=False,  # no augmentation for validation
+        ecg_base_memmap_path=ecg_base_memmap_path,
+        has_baseline=has_baseline_filtered[val_idx],
     )
 
     effective_train_workers = NUM_WORKERS if train_num_workers is None else train_num_workers
