@@ -35,9 +35,6 @@ mimic_data/ecg_cache/
 # If you store as numpy
 *.npy
 
-# Model weights (too large for git)
-*.pth
-
 # SQLite databases
 *.db
 
