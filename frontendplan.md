@@ -22,14 +22,14 @@ The application follows a decoupled, AI-native microservices architecture:
 
 Rather than running heavy, live inference on arbitrary user-uploaded data, the system relies on a curated database of the `refined_temporal_fusion_dataset` (N=40,255). 
 - **Stored Test-Set Admissions:** The database holds actual sequential clinical events.
-- **Stored Predictions & Ensembles:** Fast retrieval of the 0.7767 F1 Early/Late Fusion Ensemble results.
+- **Stored Predictions:** Fast retrieval of the 0.7753 F1 Early Fusion model results.
 - **Precomputed Attention Maps:** Anatomical and Temporal GRU attention scores are pre-calculated to allow instantaneous loading.
 - **Stored ECG Trajectories:** Quick-access retrieval of 4D memmap signals for rendering in the browser.
 
 ## 4. Dashboard Architecture
 The main dashboard serves as the central hub, designed to look like a high-end ICU/Telemetry monitoring station.
 - **Sidebar Navigation:** Links to 'Admissions', 'Model Metrics', 'Case Comparison', and 'Settings'.
-- **Top Metrics Bar:** Displays total cohort size, current AMI prevalence, and current ensemble confidence threshold.
+- **Top Metrics Bar:** Displays total cohort size, current AMI prevalence, and current model confidence threshold.
 - **Temporal Status Indicators:** Visual sparks indicating if a patient has 1, 2, or 3 temporal observations.
 - **Admissions Table:** A highly sortable, filterable list of patient records.
 
@@ -72,9 +72,9 @@ This section bridges the gap between raw data and the model's neural network log
 
 ## 9. Prediction Module
 The actionable inference station located prominently on the dashboard.
-- **"Run AI Analysis" Action:** Simulates a live inference request (retrieving stored ensemble outputs).
-- **Ensemble Output:** Displays the final combined probability (e.g., 88.4%) against the optimized 0.770 threshold.
-- **Branch Breakdown:** Shows the independent Late Fusion (`P=0.85`, clinical/ECG split) vs Early Fusion predictions.
+- **"Run AI Analysis" Action:** Simulates a live inference request (retrieving stored model outputs).
+- **Prediction Output:** Displays the final probability (e.g., 88.4%) against the optimized baseline threshold.
+- **Modality Breakdown:** Shows how the model ingested both clinical context and ECG morphology during the Early Fusion phase.
 - **Confidence Gauge:** A radial dial showing the model's certainty.
 - **Dominant Modality:** Indicates whether the model relied heavier on the ECG morphological trajectory or the clinical troponin trajectory to make its decision.
 
@@ -101,7 +101,7 @@ The FastAPI layer connecting the Next.js frontend to the SQLite/PostgreSQL datab
 - `GET /api/admissions` - Returns paginated, filterable patient lists.
 - `GET /api/admission/{hadm_id}` - Fetches full static clinical and trajectory metadata.
 - `GET /api/ecg/{hadm_id}?timestep={t}` - Returns the `12x5000` array for browser rendering.
-- `GET /api/prediction/{hadm_id}` - Retrieves Early, Late, and Ensemble predictions and confidence intervals.
+- `GET /api/prediction/{hadm_id}` - Retrieves the Early Fusion model prediction and confidence intervals.
 - `GET /api/explain/{hadm_id}` - Returns the pre-calculated anatomical and temporal attention weights (Entropy/Dominance scores) and textual explanation.
 
 ## 14. Database Schema
@@ -110,7 +110,7 @@ A highly structured relational or NoSQL equivalent database format:
 - **`admissions`**: `hadm_id`, `subject_id`, `admittime`, `ground_truth_ami`.
 - **`clinical_timelines`**: `hadm_id`, `timestep`, `trop_value`, `hr`, `bp`, `ckd`, `sepsis`.
 - **`ecg_metadata`**: `hadm_id`, `timestep`, `ecg_path`, `time_delta`.
-- **`model_inference`**: `hadm_id`, `early_prob`, `late_prob`, `ensemble_prob`, `attn_temp_entropy`, `attn_spatial_dominance`.
+- **`model_inference`**: `hadm_id`, `predicted_prob`, `attn_temp_entropy`, `attn_spatial_dominance`.
 
 ## 15. Folder Structure
 Organized for scale and maintainability inside a Next.js environment:
