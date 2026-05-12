@@ -160,8 +160,10 @@ def load_and_prepare_temporal_data(
     memmap_path = ECG_CACHE_DIR / "temporal_ecg_dataset.dat"
     memmap_shape = (n_samples, MAX_SEQ_LEN, ECG_LEADS, ECG_LENGTH)
     
-    if memmap_path.exists():
-        print(f"[ECG] Temporal Memmap already exists: {memmap_path}")
+    expected_bytes = n_samples * MAX_SEQ_LEN * ECG_LEADS * ECG_LENGTH * 4 # 4 bytes per float32
+    
+    if memmap_path.exists() and memmap_path.stat().st_size == expected_bytes:
+        print(f"[ECG] Temporal Memmap already exists and size matches: {memmap_path}")
     else:
         print("[ECG] Building 4D Temporal ECG Memmap from existing static memmap...")
         
@@ -176,7 +178,7 @@ def load_and_prepare_temporal_data(
         old_memmap = np.memmap(old_memmap_path, dtype=np.float32, mode='r', shape=(len(old_df), ECG_LEADS, ECG_LENGTH))
         new_memmap = np.memmap(memmap_path, dtype=np.float32, mode='w+', shape=memmap_shape)
         
-        for i, row in tqdm(df.iterrows(), total=n_samples, desc="Writing Sequences"):
+        for i, (_, row) in enumerate(tqdm(df.iterrows(), total=n_samples, desc="Writing Sequences")):
             for t in range(MAX_SEQ_LEN):
                 p = row[f"ecg_path_{t}"]
                 if pd.notnull(p) and p in path_to_idx:
