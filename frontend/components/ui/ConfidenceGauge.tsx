@@ -43,9 +43,9 @@ export default function ConfidenceGauge({ probability, size = 160, label = "AMI 
     // Color based on probability
     let color: string;
     if (probability >= 0.75) color = "#dc2626";
-    else if (probability >= 0.48) color = "#f97316";
+    else if (probability >= 0.48) color = "#ea580c";
     else if (probability >= 0.25) color = "#d97706";
-    else color = "#059669";
+    else color = "#1a7a45";
 
     // Fill arc (no glow on light theme)
     ctx.beginPath();
@@ -70,7 +70,7 @@ export default function ConfidenceGauge({ probability, size = 160, label = "AMI 
     ctx.font = `bold ${size * 0.175}px 'JetBrains Mono', monospace`;
     ctx.fillText(`${(probability * 100).toFixed(1)}%`, cx, cy + 4);
 
-    ctx.fillStyle = "#64748b";
+    ctx.fillStyle = "#6b9580";
     ctx.font = `${size * 0.075}px 'DM Sans', sans-serif`;
     ctx.fillText(label, cx, cy + size * 0.22);
   }, [probability, size, label]);

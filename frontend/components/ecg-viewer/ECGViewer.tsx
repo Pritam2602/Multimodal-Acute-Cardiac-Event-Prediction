@@ -23,13 +23,13 @@ interface ECGViewerProps {
 }
 
 function getLeadColor(lead: string, attentionWeights?: Record<string, number>): string {
-  if (!attentionWeights) return "#0369a1";
+  if (!attentionWeights) return "#1a7a45";
   const w = attentionWeights[lead] ?? 0;
   if (w >= 0.80) return "#dc2626";
   if (w >= 0.60) return "#ea580c";
   if (w >= 0.40) return "#d97706";
-  if (w >= 0.20) return "#0284c7";
-  return "#64748b";
+  if (w >= 0.20) return "#1a7a45";
+  return "#7fb898";
 }
 
 function getLeadGlow(lead: string, attentionWeights?: Record<string, number>): number {
@@ -181,7 +181,7 @@ export default function ECGViewer({ admission, activeTimestep, attentionWeights 
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#f8f7f5";
+    ctx.fillStyle = "#f6fdf8";
     ctx.fillRect(0, 0, W, H);
 
     if (isolatedLead) {
@@ -221,7 +221,7 @@ export default function ECGViewer({ admission, activeTimestep, attentionWeights 
         if (rhythmH > 10) {
           const color = getLeadColor("II", attentionWeights);
           drawECGChannel(ctx, rhythmSignal, 1, rhythmY, W - 2, rhythmH, color, 0, zoom, offset, "II (Rhythm Strip)", attentionWeights?.["II"] ?? 0);
-          ctx.fillStyle = "#64748b";
+          ctx.fillStyle = "#6b9580";
           ctx.font = "10px 'DM Sans', sans-serif";
           ctx.textAlign = "right";
           ctx.fillText(`${hr} bpm · 10s · ${DISPLAY_SAMPLES}pt`, W - 6, rhythmY + 14);

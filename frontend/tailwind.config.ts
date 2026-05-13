@@ -9,21 +9,28 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        base: "#f8fafc",
-        surface: "#ffffff",
-        elevated: "#f1f5f9",
-        card: "#f8fafc",
-        "border-subtle": "#e2e8f0",
-        "border-default": "#cbd5e1",
-        "border-bright": "#94a3b8",
-        "text-primary": "#0f172a",
-        "text-secondary": "#334155",
-        "text-muted": "#64748b",
+        // Main layout backgrounds
+        base: "#e8f5ed",       // light mint — page background
+        surface: "#ffffff",    // white — cards, panels
+        elevated: "#f0faf4",   // very light mint — inputs, chips
+        card: "#ffffff",
+        "border-subtle": "#d0e8d8",
+        "border-default": "#b8d8c4",
+        "border-bright": "#7fb898",
+
+        // Text
+        "text-primary": "#0d2b1a",
+        "text-secondary": "#2d5a3d",
+        "text-muted": "#6b9580",
+
+        // Primary accent — medium forest green (buttons, links, active states)
         cyan: {
-          DEFAULT: "#0284c7",
-          dim: "#0369a1",
-          glow: "rgba(2, 132, 199, 0.08)",
+          DEFAULT: "#1a7a45",
+          dim: "#145f35",
+          glow: "rgba(26, 122, 69, 0.10)",
         },
+
+        // Semantic
         amber: {
           DEFAULT: "#d97706",
           glow: "rgba(217, 119, 6, 0.08)",
@@ -34,9 +41,9 @@ const config: Config = {
           glow: "rgba(220, 38, 38, 0.08)",
         },
         safe: {
-          DEFAULT: "#059669",
-          dim: "#047857",
-          glow: "rgba(5, 150, 105, 0.08)",
+          DEFAULT: "#16a34a",
+          dim: "#15803d",
+          glow: "rgba(22, 163, 74, 0.08)",
         },
         purple: {
           DEFAULT: "#7c3aed",
@@ -44,6 +51,16 @@ const config: Config = {
         },
         orange: {
           400: "#f97316",
+        },
+
+        // Sidebar — deep forest green (standalone, never used as bg-base)
+        sidebar: {
+          DEFAULT: "#163829",
+          surface: "#1c4a35",
+          active: "#ffffff",
+          text: "#c8e8d4",
+          muted: "#7aab8a",
+          border: "#1f5040",
         },
       },
       fontFamily: {
@@ -71,12 +88,13 @@ const config: Config = {
         },
       },
       boxShadow: {
-        cyan: "0 1px 4px rgba(2, 132, 199, 0.15)",
-        "cyan-sm": "0 1px 3px rgba(2, 132, 199, 0.12)",
+        cyan: "0 2px 8px rgba(26, 122, 69, 0.18)",
+        "cyan-sm": "0 1px 4px rgba(26, 122, 69, 0.14)",
         amber: "0 1px 4px rgba(217, 119, 6, 0.15)",
         danger: "0 1px 4px rgba(220, 38, 38, 0.15)",
-        safe: "0 1px 4px rgba(5, 150, 105, 0.12)",
+        safe: "0 1px 4px rgba(22, 163, 74, 0.12)",
         card: "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)",
+        sidebar: "2px 0 12px rgba(0,0,0,0.12)",
       },
     },
   },

@@ -21,7 +21,7 @@ function LeadHeatmapCell({ lead, weight }: { lead: string; weight: number }) {
       <span className={`text-[10px] font-mono font-bold ${text}`}>{lead}</span>
       <span className={`text-[9px] font-mono ${text} opacity-80`}>{(weight * 100).toFixed(0)}%</span>
       <div className="w-full h-1 bg-border-subtle rounded-full mt-1 overflow-hidden">
-        <div className="h-full rounded-full" style={{ width: `${weight * 100}%`, background: text === "text-danger" ? "#dc2626" : text === "text-amber" ? "#d97706" : text === "text-orange-600" ? "#ea580c" : text === "text-cyan" ? "#0284c7" : "#94a3b8" }} />
+        <div className="h-full rounded-full" style={{ width: `${weight * 100}%`, background: text === "text-danger" ? "#dc2626" : text === "text-amber" ? "#d97706" : text === "text-orange-600" ? "#ea580c" : text === "text-cyan" ? "#1a7a45" : "#7fb898" }} />
       </div>
     </div>
   );
@@ -57,7 +57,7 @@ export default function AttentionPanel({ attention, activeTimestep }: AttentionP
         <div className="flex items-center gap-2 mt-3">
           <span className="text-[9px] text-text-muted">Low</span>
           <div className="flex-1 h-1.5 rounded-full" style={{
-            background: "linear-gradient(to right, #94a3b8, #0284c7, #d97706, #ea580c, #dc2626)"
+            background: "linear-gradient(to right, #7fb898, #1a7a45, #d97706, #ea580c, #dc2626)"
           }} />
           <span className="text-[9px] text-text-muted">High Attention</span>
         </div>

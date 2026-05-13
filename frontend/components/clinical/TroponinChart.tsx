@@ -62,8 +62,8 @@ function ConfidenceLine({ timelines, confidenceEvolution }: { timelines: Clinica
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={data} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-        <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#64748b", fontFamily: "JetBrains Mono" }} />
-        <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#64748b", fontFamily: "JetBrains Mono" }}
+        <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#6b9580", fontFamily: "JetBrains Mono" }} />
+        <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#6b9580", fontFamily: "JetBrains Mono" }}
           tickFormatter={(v) => `${v}%`} />
         <ReferenceLine y={48} stroke="#f59e0b" strokeDasharray="4 2" strokeWidth={1} label={{ value: "Threshold", position: "insideTopRight", fontSize: 9, fill: "#d97706" }} />
         <Line
@@ -96,10 +96,10 @@ export default function TroponinChart({ timelines, activeTimestep }: TroponinCha
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis
                 dataKey="label"
-                tick={{ fontSize: 10, fill: "#64748b", fontFamily: "JetBrains Mono" }}
+                tick={{ fontSize: 10, fill: "#6b9580", fontFamily: "JetBrains Mono" }}
               />
               <YAxis
-                tick={{ fontSize: 10, fill: "#64748b", fontFamily: "JetBrains Mono" }}
+                tick={{ fontSize: 10, fill: "#6b9580", fontFamily: "JetBrains Mono" }}
                 tickFormatter={(v) => v.toFixed(2)}
               />
               <ReferenceLine

@@ -7,6 +7,12 @@
 :root {
   --font-dm-sans: 'DM Sans', system-ui, sans-serif;
   --font-jetbrains-mono: 'JetBrains Mono', monospace;
+  --sidebar-bg: #163829;
+  --sidebar-surface: #1c4a35;
+  --sidebar-border: #1f5040;
+  --sidebar-text: #c8e8d4;
+  --sidebar-muted: #7aab8a;
+  --primary: #1a7a45;
 }
 
 * {
@@ -17,55 +23,55 @@
 
 html, body {
   height: 100%;
-  background-color: #f8fafc;
-  color: #0f172a;
+  background-color: #e8f5ed;
+  color: #0d2b1a;
   font-family: var(--font-dm-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Scrollbar */
+/* Scrollbar — green toned */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #f1f5f9; }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-track { background: #e8f5ed; }
+::-webkit-scrollbar-thumb { background: #b8d8c4; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #7fb898; }
 
-/* ECG grid pattern */
+/* ECG grid — warm white paper with soft green grid */
 .ecg-grid {
-  background-color: #fefefe;
+  background-color: #fffefb;
   background-image:
-    linear-gradient(rgba(203, 213, 225, 0.6) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(203, 213, 225, 0.6) 1px, transparent 1px),
-    linear-gradient(rgba(226, 232, 240, 0.5) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(226, 232, 240, 0.5) 1px, transparent 1px);
+    linear-gradient(rgba(239, 68, 68, 0.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(239, 68, 68, 0.10) 1px, transparent 1px),
+    linear-gradient(rgba(239, 68, 68, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(239, 68, 68, 0.04) 1px, transparent 1px);
   background-size: 50px 50px, 50px 50px, 10px 10px, 10px 10px;
 }
 
-/* Accent text — no glow on light theme */
-.glow-cyan { color: #0284c7; }
-.glow-amber { color: #d97706; }
+/* Accent text */
+.glow-cyan   { color: #1a7a45; }
+.glow-amber  { color: #d97706; }
 .glow-danger { color: #dc2626; }
-.glow-safe { color: #059669; }
+.glow-safe   { color: #16a34a; }
 
 /* Card base */
 .card {
   background: #ffffff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #d0e8d8;
   border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.04);
 }
 
 .card-elevated {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  border: 1px solid #d0e8d8;
   border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  box-shadow: 0 2px 8px rgba(22,56,41,0.08);
 }
 
 /* Stat chip */
 .stat-chip {
   background: #ffffff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #d0e8d8;
   border-radius: 8px;
   padding: 12px 16px;
   box-shadow: 0 1px 2px rgba(0,0,0,0.04);
@@ -83,24 +89,18 @@ html, body {
   text-transform: uppercase;
 }
 
-/* Attention region markers — subtle on light background */
-.attn-glow-inferior {
-  filter: drop-shadow(0 0 4px rgba(220, 38, 38, 0.4));
-}
-.attn-glow-anterior {
-  filter: drop-shadow(0 0 4px rgba(2, 132, 199, 0.4));
-}
-.attn-glow-lateral {
-  filter: drop-shadow(0 0 4px rgba(217, 119, 6, 0.4));
-}
+/* Attention region markers */
+.attn-glow-inferior  { filter: drop-shadow(0 0 4px rgba(220, 38, 38, 0.35)); }
+.attn-glow-anterior  { filter: drop-shadow(0 0 4px rgba(26, 122, 69, 0.35)); }
+.attn-glow-lateral   { filter: drop-shadow(0 0 4px rgba(217, 119, 6, 0.35)); }
 
 /* Shimmer loading */
 .shimmer {
   background: linear-gradient(
     90deg,
-    #f1f5f9 0%,
-    #e2e8f0 50%,
-    #f1f5f9 100%
+    #e8f5ed 0%,
+    #d0e8d8 50%,
+    #e8f5ed 100%
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s linear infinite;
@@ -108,9 +108,9 @@ html, body {
 
 /* Sidebar active link */
 .nav-active {
-  background: rgba(2, 132, 199, 0.07);
-  border-left: 2px solid #0284c7;
-  color: #0284c7;
+  background: #ffffff;
+  border-radius: 10px;
+  color: #163829;
 }
 
 /* Confidence bar */
@@ -122,7 +122,7 @@ html, body {
 
 /* Table row hover */
 .table-row-hover:hover {
-  background: #f8fafc;
+  background: #f0faf4;
   cursor: pointer;
 }
 
