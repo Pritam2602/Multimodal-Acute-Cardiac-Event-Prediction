@@ -35,31 +35,25 @@ export default function ConfidenceGauge({ probability, size = 160, label = "AMI 
     // Background arc
     ctx.beginPath();
     ctx.arc(cx, cy, r, startAngle, endAngle);
-    ctx.strokeStyle = "#162845";
+    ctx.strokeStyle = "#e2e8f0";
     ctx.lineWidth = 12;
     ctx.lineCap = "round";
     ctx.stroke();
 
-    // Color gradient based on probability
+    // Color based on probability
     let color: string;
-    if (probability >= 0.75) color = "#f43f5e";
+    if (probability >= 0.75) color = "#dc2626";
     else if (probability >= 0.48) color = "#f97316";
-    else if (probability >= 0.25) color = "#eab308";
-    else color = "#10b981";
+    else if (probability >= 0.25) color = "#d97706";
+    else color = "#059669";
 
-    // Glow effect
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 12;
-
-    // Fill arc
+    // Fill arc (no glow on light theme)
     ctx.beginPath();
     ctx.arc(cx, cy, r, startAngle, fillAngle);
     ctx.strokeStyle = color;
     ctx.lineWidth = 12;
     ctx.lineCap = "round";
     ctx.stroke();
-
-    ctx.shadowBlur = 0;
 
     // Threshold marker at 0.48
     const thresholdAngle = startAngle + (endAngle - startAngle) * 0.48;
@@ -76,7 +70,7 @@ export default function ConfidenceGauge({ probability, size = 160, label = "AMI 
     ctx.font = `bold ${size * 0.175}px 'JetBrains Mono', monospace`;
     ctx.fillText(`${(probability * 100).toFixed(1)}%`, cx, cy + 4);
 
-    ctx.fillStyle = "#4a6a94";
+    ctx.fillStyle = "#64748b";
     ctx.font = `${size * 0.075}px 'DM Sans', sans-serif`;
     ctx.fillText(label, cx, cy + size * 0.22);
   }, [probability, size, label]);

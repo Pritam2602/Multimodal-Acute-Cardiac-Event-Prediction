@@ -21,11 +21,11 @@ function CustomDot(props: any) {
   return (
     <g>
       {isActive && (
-        <circle cx={cx} cy={cy} r={14} fill={isHigh ? "rgba(244,63,94,0.1)" : "rgba(16,185,129,0.1)"} />
+        <circle cx={cx} cy={cy} r={14} fill={isHigh ? "rgba(220,38,38,0.08)" : "rgba(5,150,105,0.08)"} />
       )}
       <circle
         cx={cx} cy={cy} r={isActive ? 6 : 4}
-        fill={isHigh ? "#f43f5e" : "#10b981"}
+        fill={isHigh ? "#dc2626" : "#059669"}
         stroke={isActive ? "#ffffff" : "transparent"}
         strokeWidth={isActive ? 2 : 0}
       />
@@ -61,14 +61,14 @@ function ConfidenceLine({ timelines, confidenceEvolution }: { timelines: Clinica
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={data} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#162845" />
-        <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#4a6a94", fontFamily: "JetBrains Mono" }} />
-        <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#4a6a94", fontFamily: "JetBrains Mono" }}
+        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+        <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#64748b", fontFamily: "JetBrains Mono" }} />
+        <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#64748b", fontFamily: "JetBrains Mono" }}
           tickFormatter={(v) => `${v}%`} />
-        <ReferenceLine y={48} stroke="#f59e0b" strokeDasharray="4 2" strokeWidth={1} label={{ value: "Threshold", position: "insideTopRight", fontSize: 9, fill: "#f59e0b" }} />
+        <ReferenceLine y={48} stroke="#f59e0b" strokeDasharray="4 2" strokeWidth={1} label={{ value: "Threshold", position: "insideTopRight", fontSize: 9, fill: "#d97706" }} />
         <Line
-          type="monotone" dataKey="confidence" stroke="#a855f7" strokeWidth={2}
-          dot={{ r: 4, fill: "#a855f7", stroke: "#fff", strokeWidth: 1 }}
+          type="monotone" dataKey="confidence" stroke="#7c3aed" strokeWidth={2}
+          dot={{ r: 4, fill: "#7c3aed", stroke: "#f1f5f9", strokeWidth: 1 }}
           strokeDasharray={undefined}
         />
       </LineChart>
@@ -89,17 +89,17 @@ export default function TroponinChart({ timelines, activeTimestep }: TroponinCha
             <AreaChart data={data} margin={{ top: 6, right: 8, bottom: 4, left: 0 }}>
               <defs>
                 <linearGradient id="tropGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.25} />
-                  <stop offset="95%" stopColor="#f43f5e" stopOpacity={0.02} />
+                  <stop offset="5%" stopColor="#dc2626" stopOpacity={0.15} />
+                  <stop offset="95%" stopColor="#dc2626" stopOpacity={0.01} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#162845" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis
                 dataKey="label"
-                tick={{ fontSize: 10, fill: "#4a6a94", fontFamily: "JetBrains Mono" }}
+                tick={{ fontSize: 10, fill: "#64748b", fontFamily: "JetBrains Mono" }}
               />
               <YAxis
-                tick={{ fontSize: 10, fill: "#4a6a94", fontFamily: "JetBrains Mono" }}
+                tick={{ fontSize: 10, fill: "#64748b", fontFamily: "JetBrains Mono" }}
                 tickFormatter={(v) => v.toFixed(2)}
               />
               <ReferenceLine
@@ -107,13 +107,13 @@ export default function TroponinChart({ timelines, activeTimestep }: TroponinCha
                 stroke="#f59e0b"
                 strokeDasharray="4 2"
                 strokeWidth={1}
-                label={{ value: "ULN 0.014", position: "insideTopRight", fontSize: 9, fill: "#f59e0b" }}
+                label={{ value: "ULN 0.014", position: "insideTopRight", fontSize: 9, fill: "#d97706" }}
               />
               <Tooltip content={<CustomTooltip />} />
               <Area
                 type="monotone"
                 dataKey="trop_value"
-                stroke="#f43f5e"
+                stroke="#dc2626"
                 strokeWidth={2}
                 fill="url(#tropGrad)"
                 dot={(props) => <CustomDot {...props} activeTimestep={activeTimestep} />}

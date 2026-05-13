@@ -112,7 +112,7 @@ export default function PredictionModule({ admission }: PredictionModuleProps) {
                 <div className="h-2 bg-border-subtle rounded-full overflow-hidden">
                   <div
                     className="h-full bg-cyan rounded-full transition-all duration-1000"
-                    style={{ width: `${pred.ecg_contribution * 100}%`, boxShadow: "0 0 8px rgba(0,212,255,0.5)" }}
+                    style={{ width: `${pred.ecg_contribution * 100}%` }}
                   />
                 </div>
               </div>
@@ -129,7 +129,7 @@ export default function PredictionModule({ admission }: PredictionModuleProps) {
                 <div className="h-2 bg-border-subtle rounded-full overflow-hidden">
                   <div
                     className="h-full bg-danger rounded-full transition-all duration-1000"
-                    style={{ width: `${pred.trop_contribution * 100}%`, boxShadow: "0 0 8px rgba(244,63,94,0.5)" }}
+                    style={{ width: `${pred.trop_contribution * 100}%` }}
                   />
                 </div>
               </div>

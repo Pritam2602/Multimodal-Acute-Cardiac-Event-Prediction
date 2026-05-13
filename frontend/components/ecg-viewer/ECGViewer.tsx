@@ -23,19 +23,19 @@ interface ECGViewerProps {
 }
 
 function getLeadColor(lead: string, attentionWeights?: Record<string, number>): string {
-  if (!attentionWeights) return "#00d4ff";
+  if (!attentionWeights) return "#0369a1";
   const w = attentionWeights[lead] ?? 0;
-  if (w >= 0.80) return "#f43f5e";
-  if (w >= 0.60) return "#f97316";
-  if (w >= 0.40) return "#f59e0b";
-  if (w >= 0.20) return "#00d4ff";
-  return "#4a6a94";
+  if (w >= 0.80) return "#dc2626";
+  if (w >= 0.60) return "#ea580c";
+  if (w >= 0.40) return "#d97706";
+  if (w >= 0.20) return "#0284c7";
+  return "#64748b";
 }
 
 function getLeadGlow(lead: string, attentionWeights?: Record<string, number>): number {
   if (!attentionWeights) return 0;
   const w = attentionWeights[lead] ?? 0;
-  return w * 12;
+  return w * 4;
 }
 
 function drawECGChannel(
@@ -52,12 +52,12 @@ function drawECGChannel(
   label: string,
   attentionVal: number,
 ) {
-  // Background cell
-  ctx.fillStyle = "rgba(5, 11, 22, 0.6)";
+  // Background cell (ECG paper — warm white)
+  ctx.fillStyle = "#fffbf9";
   ctx.fillRect(x, y, w, h);
 
-  // Grid lines (mimicking ECG paper)
-  ctx.strokeStyle = "rgba(0, 212, 255, 0.05)";
+  // Grid lines (ECG paper style — light red/pink)
+  ctx.strokeStyle = "rgba(239, 68, 68, 0.12)";
   ctx.lineWidth = 0.5;
   const gridSpacing = 20;
   for (let gx = x; gx <= x + w; gx += gridSpacing) {
@@ -67,7 +67,7 @@ function drawECGChannel(
     ctx.beginPath(); ctx.moveTo(x, gy); ctx.lineTo(x + w, gy); ctx.stroke();
   }
   // Major grid every 5 small
-  ctx.strokeStyle = "rgba(0, 212, 255, 0.10)";
+  ctx.strokeStyle = "rgba(239, 68, 68, 0.25)";
   ctx.lineWidth = 0.5;
   for (let gx = x; gx <= x + w; gx += gridSpacing * 5) {
     ctx.beginPath(); ctx.moveTo(gx, y); ctx.lineTo(gx, y + h); ctx.stroke();
@@ -77,7 +77,7 @@ function drawECGChannel(
   }
 
   // Baseline
-  ctx.strokeStyle = "rgba(0, 212, 255, 0.08)";
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.4)";
   ctx.lineWidth = 0.5;
   ctx.beginPath();
   ctx.moveTo(x, y + h / 2);
@@ -130,7 +130,7 @@ function drawECGChannel(
   if (attentionVal > 0) {
     const barW = w * 0.6;
     const barH = 2;
-    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    ctx.fillStyle = "rgba(0,0,0,0.07)";
     ctx.fillRect(x + 5, y + h - 8, barW, barH);
     ctx.fillStyle = color;
     ctx.fillRect(x + 5, y + h - 8, barW * attentionVal, barH);
@@ -181,7 +181,7 @@ export default function ECGViewer({ admission, activeTimestep, attentionWeights 
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#050b16";
+    ctx.fillStyle = "#f8f7f5";
     ctx.fillRect(0, 0, W, H);
 
     if (isolatedLead) {
@@ -221,7 +221,7 @@ export default function ECGViewer({ admission, activeTimestep, attentionWeights 
         if (rhythmH > 10) {
           const color = getLeadColor("II", attentionWeights);
           drawECGChannel(ctx, rhythmSignal, 1, rhythmY, W - 2, rhythmH, color, 0, zoom, offset, "II (Rhythm Strip)", attentionWeights?.["II"] ?? 0);
-          ctx.fillStyle = "#4a6a94";
+          ctx.fillStyle = "#64748b";
           ctx.font = "10px 'DM Sans', sans-serif";
           ctx.textAlign = "right";
           ctx.fillText(`${hr} bpm · 10s · ${DISPLAY_SAMPLES}pt`, W - 6, rhythmY + 14);

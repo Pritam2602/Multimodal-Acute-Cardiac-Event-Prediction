@@ -17,8 +17,8 @@
 
 html, body {
   height: 100%;
-  background-color: #060d1a;
-  color: #e2eaf8;
+  background-color: #f8fafc;
+  color: #0f172a;
   font-family: var(--font-dm-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -26,46 +26,49 @@ html, body {
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #0a1628; }
-::-webkit-scrollbar-thumb { background: #1e3558; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #2a4d7a; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
 /* ECG grid pattern */
 .ecg-grid {
-  background-color: #050b16;
+  background-color: #fefefe;
   background-image:
-    linear-gradient(rgba(0, 212, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 212, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(rgba(0, 212, 255, 0.015) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 212, 255, 0.015) 1px, transparent 1px);
+    linear-gradient(rgba(203, 213, 225, 0.6) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(203, 213, 225, 0.6) 1px, transparent 1px),
+    linear-gradient(rgba(226, 232, 240, 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(226, 232, 240, 0.5) 1px, transparent 1px);
   background-size: 50px 50px, 50px 50px, 10px 10px, 10px 10px;
 }
 
-/* Glowing text */
-.glow-cyan { text-shadow: 0 0 12px rgba(0, 212, 255, 0.6); }
-.glow-amber { text-shadow: 0 0 12px rgba(245, 158, 11, 0.6); }
-.glow-danger { text-shadow: 0 0 12px rgba(244, 63, 94, 0.6); }
-.glow-safe { text-shadow: 0 0 12px rgba(16, 185, 129, 0.5); }
+/* Accent text — no glow on light theme */
+.glow-cyan { color: #0284c7; }
+.glow-amber { color: #d97706; }
+.glow-danger { color: #dc2626; }
+.glow-safe { color: #059669; }
 
 /* Card base */
 .card {
-  background: #0e1d35;
-  border: 1px solid #1e3558;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
   border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
 }
 
 .card-elevated {
-  background: #111f38;
-  border: 1px solid #1e3558;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
   border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
 }
 
 /* Stat chip */
 .stat-chip {
-  background: rgba(14, 29, 53, 0.8);
-  border: 1px solid #1e3558;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   padding: 12px 16px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
 }
 
 /* Risk badge base */
@@ -80,24 +83,24 @@ html, body {
   text-transform: uppercase;
 }
 
-/* Attention glow overlay */
+/* Attention region markers — subtle on light background */
 .attn-glow-inferior {
-  filter: drop-shadow(0 0 8px rgba(244, 63, 94, 0.7));
+  filter: drop-shadow(0 0 4px rgba(220, 38, 38, 0.4));
 }
 .attn-glow-anterior {
-  filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.7));
+  filter: drop-shadow(0 0 4px rgba(2, 132, 199, 0.4));
 }
 .attn-glow-lateral {
-  filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.7));
+  filter: drop-shadow(0 0 4px rgba(217, 119, 6, 0.4));
 }
 
 /* Shimmer loading */
 .shimmer {
   background: linear-gradient(
     90deg,
-    #0e1d35 0%,
-    #162845 50%,
-    #0e1d35 100%
+    #f1f5f9 0%,
+    #e2e8f0 50%,
+    #f1f5f9 100%
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s linear infinite;
@@ -105,9 +108,9 @@ html, body {
 
 /* Sidebar active link */
 .nav-active {
-  background: rgba(0, 212, 255, 0.08);
-  border-left: 2px solid #00d4ff;
-  color: #00d4ff;
+  background: rgba(2, 132, 199, 0.07);
+  border-left: 2px solid #0284c7;
+  color: #0284c7;
 }
 
 /* Confidence bar */
@@ -119,7 +122,7 @@ html, body {
 
 /* Table row hover */
 .table-row-hover:hover {
-  background: rgba(0, 212, 255, 0.04);
+  background: #f8fafc;
   cursor: pointer;
 }
 

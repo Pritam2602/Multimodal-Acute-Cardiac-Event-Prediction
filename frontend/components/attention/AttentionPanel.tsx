@@ -11,7 +11,7 @@ interface AttentionPanelProps {
 function LeadHeatmapCell({ lead, weight }: { lead: string; weight: number }) {
   let bg: string, text: string;
   if (weight >= 0.80) { bg = "bg-danger/20 border-danger/50"; text = "text-danger"; }
-  else if (weight >= 0.60) { bg = "bg-orange-900/20 border-orange-700/50"; text = "text-orange-400"; }
+  else if (weight >= 0.60) { bg = "bg-orange-50 border-orange-200"; text = "text-orange-600"; }
   else if (weight >= 0.40) { bg = "bg-amber/10 border-amber/30"; text = "text-amber"; }
   else if (weight >= 0.20) { bg = "bg-cyan/5 border-cyan/20"; text = "text-cyan"; }
   else { bg = "bg-elevated border-border-default"; text = "text-text-muted"; }
@@ -21,7 +21,7 @@ function LeadHeatmapCell({ lead, weight }: { lead: string; weight: number }) {
       <span className={`text-[10px] font-mono font-bold ${text}`}>{lead}</span>
       <span className={`text-[9px] font-mono ${text} opacity-80`}>{(weight * 100).toFixed(0)}%</span>
       <div className="w-full h-1 bg-border-subtle rounded-full mt-1 overflow-hidden">
-        <div className="h-full rounded-full" style={{ width: `${weight * 100}%`, background: text.replace("text-", "") === "danger" ? "#f43f5e" : text.replace("text-", "") === "amber" ? "#f59e0b" : text.replace("text-", "") === "cyan" ? "#00d4ff" : "#4a6a94" }} />
+        <div className="h-full rounded-full" style={{ width: `${weight * 100}%`, background: text === "text-danger" ? "#dc2626" : text === "text-amber" ? "#d97706" : text === "text-orange-600" ? "#ea580c" : text === "text-cyan" ? "#0284c7" : "#94a3b8" }} />
       </div>
     </div>
   );
@@ -57,7 +57,7 @@ export default function AttentionPanel({ attention, activeTimestep }: AttentionP
         <div className="flex items-center gap-2 mt-3">
           <span className="text-[9px] text-text-muted">Low</span>
           <div className="flex-1 h-1.5 rounded-full" style={{
-            background: "linear-gradient(to right, #4a6a94, #00d4ff, #f59e0b, #f97316, #f43f5e)"
+            background: "linear-gradient(to right, #94a3b8, #0284c7, #d97706, #ea580c, #dc2626)"
           }} />
           <span className="text-[9px] text-text-muted">High Attention</span>
         </div>
