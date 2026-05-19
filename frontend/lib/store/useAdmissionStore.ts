@@ -68,7 +68,7 @@ export const useAdmissionStore = create<AdmissionState>((set, get) => ({
     set({ isLoadingAdmissions: true, admissionsError: null });
     try {
       const qs = new URLSearchParams({
-        limit: "200",
+        limit: "10000",
         ...(params.search ? { search: params.search } : {}),
         ...(params.risk && params.risk !== "all" ? { risk: params.risk } : {}),
         ...(params.prediction && params.prediction !== "all" ? { prediction: params.prediction } : {}),

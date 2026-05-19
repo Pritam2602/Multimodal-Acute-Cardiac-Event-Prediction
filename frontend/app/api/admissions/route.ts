@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   const search     = searchParams.get("search") || "";
   const risk       = searchParams.get("risk") || "";
   const prediction = searchParams.get("prediction") || "";
-  const limit      = Math.min(parseInt(searchParams.get("limit") || "100", 10), 500);
+  const limit      = Math.min(parseInt(searchParams.get("limit") || "200", 10), 10000);
   const offset     = parseInt(searchParams.get("offset") || "0", 10);
 
   try {
