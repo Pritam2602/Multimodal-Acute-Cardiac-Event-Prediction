@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Upload, CheckCircle2, Loader2, AlertCircle, User, Activity, Cpu } from "lucide-react";
 import Sidebar from "@/components/ui/Sidebar";
+import { useAdmissionStore } from "@/lib/store/useAdmissionStore";
 
 interface FormState {
   // Demographics
@@ -98,6 +99,7 @@ function CheckField({
 
 export default function UploadPage() {
   const router = useRouter();
+  const { fetchAdmissions } = useAdmissionStore();
   const [form, setForm] = useState<FormState>(DEFAULTS);
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -150,6 +152,8 @@ export default function UploadPage() {
       if (!res.ok) throw new Error(data.detail || data.error || "Upload failed");
       setNewId(data.admission.hadm_id);
       setStatus("success");
+      // Refresh store so dashboard count and list update immediately
+      fetchAdmissions();
     } catch (err) {
       setErrorMsg(String(err));
       setStatus("error");

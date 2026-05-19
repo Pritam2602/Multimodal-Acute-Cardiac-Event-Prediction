@@ -1,6 +1,7 @@
 "use client";
 import { Users, Heart, Activity, TrendingUp } from "lucide-react";
 import { COHORT_STATS } from "@/lib/utils/mockData";
+import { useAdmissionStore } from "@/lib/store/useAdmissionStore";
 
 interface MetricCardProps {
   label: string;
@@ -35,6 +36,9 @@ function MetricCard({ label, value, sub, icon, color }: MetricCardProps) {
 }
 
 export default function MetricsBar() {
+  const { totalAdmissions, usingLiveData } = useAdmissionStore();
+  const displayTotal = usingLiveData ? totalAdmissions : COHORT_STATS.total_admissions;
+
   return (
     <header className="px-6 py-3 border-b border-border-default bg-surface flex items-center gap-3 flex-wrap">
       <div className="flex items-center gap-2.5 mr-4">
@@ -48,7 +52,7 @@ export default function MetricsBar() {
       <div className="flex items-center gap-2.5 flex-wrap ml-auto">
         <MetricCard
           label="Total Cohort"
-          value={COHORT_STATS.total_admissions.toLocaleString()}
+          value={displayTotal.toLocaleString()}
           sub="admissions"
           icon={<Users className="w-4.5 h-4.5" />}
           color="green"
