@@ -105,8 +105,8 @@ export const useAdmissionStore = create<AdmissionState>((set, get) => ({
       const matchRisk = riskFilter === "all" || a.risk_level === riskFilter;
       const matchPred =
         predictionFilter === "all" ||
-        (predictionFilter === "ami" && a.prediction.predicted_prob >= 0.48) ||
-        (predictionFilter === "non-ami" && a.prediction.predicted_prob < 0.48);
+        (predictionFilter === "ami" && a.prediction.predicted_prob >= 0.6494) ||
+        (predictionFilter === "non-ami" && a.prediction.predicted_prob < 0.6494);
       return matchSearch && matchRisk && matchPred;
     });
   },

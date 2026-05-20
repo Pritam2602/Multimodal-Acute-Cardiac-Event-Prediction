@@ -43,7 +43,7 @@ export default function ConfidenceGauge({ probability, size = 160, label = "AMI 
     // Color based on probability
     let color: string;
     if (probability >= 0.75) color = "#dc2626";
-    else if (probability >= 0.48) color = "#ea580c";
+    else if (probability >= 0.6494) color = "#ea580c";
     else if (probability >= 0.25) color = "#d97706";
     else color = "#1a7a45";
 
@@ -55,8 +55,8 @@ export default function ConfidenceGauge({ probability, size = 160, label = "AMI 
     ctx.lineCap = "round";
     ctx.stroke();
 
-    // Threshold marker at 0.48
-    const thresholdAngle = startAngle + (endAngle - startAngle) * 0.48;
+    // Threshold marker at 0.6494
+    const thresholdAngle = startAngle + (endAngle - startAngle) * 0.6494;
     const tx = cx + (r + 8) * Math.cos(thresholdAngle);
     const ty = cy + (r + 8) * Math.sin(thresholdAngle);
     ctx.beginPath();

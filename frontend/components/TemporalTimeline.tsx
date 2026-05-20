@@ -9,7 +9,7 @@ interface TemporalTimelineProps {
 
 function getProbColor(prob: number): string {
   if (prob >= 0.75) return "#f43f5e";
-  if (prob >= 0.48) return "#f97316";
+  if (prob >= 0.6494) return "#f97316";
   if (prob >= 0.25) return "#f59e0b";
   return "#10b981";
 }
@@ -46,7 +46,7 @@ export default function TemporalTimeline({ admission, activeTimestep, onTimestep
           <div
             className="absolute top-1/2 -translate-y-1/2 w-0.5 h-4 bg-amber/60"
             style={{ left: "48%" }}
-            title="AI threshold 0.48"
+            title="AI threshold 0.6494"
           />
 
           {/* Timestep markers */}
@@ -132,9 +132,9 @@ export default function TemporalTimeline({ admission, activeTimestep, onTimestep
         {/* Threshold reference */}
         <div className="flex items-center gap-2 mt-3 pt-2 border-t border-border-subtle">
           <div className="w-3 h-0.5 bg-amber" />
-          <span className="text-[9px] text-text-muted">Decision threshold: 0.48 (Youden&apos;s J optimal)</span>
+          <span className="text-[9px] text-text-muted">Decision threshold: 0.6494 (Youden&apos;s J optimal)</span>
           <span className="ml-auto text-[9px] text-text-muted">
-            Final: <span className={`font-mono font-bold ${prediction.predicted_prob >= 0.48 ? "text-danger" : "text-safe"}`}>
+            Final: <span className={`font-mono font-bold ${prediction.predicted_prob >= 0.6494 ? "text-danger" : "text-safe"}`}>
               {(prediction.predicted_prob * 100).toFixed(1)}%
             </span>
           </span>

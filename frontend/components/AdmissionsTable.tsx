@@ -174,7 +174,7 @@ export default function AdmissionsTable() {
                     <div className="flex items-center gap-2">
                       <div className={`w-1.5 h-5 rounded-full ${
                         prob >= 0.75 ? "bg-danger" :
-                        prob >= 0.48 ? "bg-orange-400" :
+                        prob >= 0.6494 ? "bg-orange-400" :
                         prob >= 0.25 ? "bg-amber" : "bg-safe"
                       }`} />
                       <div>
@@ -233,7 +233,7 @@ export default function AdmissionsTable() {
                         <div
                           className={`h-full rounded-full ${
                             prob >= 0.75 ? "bg-danger" :
-                            prob >= 0.48 ? "bg-orange-400" :
+                            prob >= 0.6494 ? "bg-orange-400" :
                             prob >= 0.25 ? "bg-amber" : "bg-safe"
                           }`}
                           style={{ width: `${prob * 100}%` }}

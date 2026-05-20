@@ -30,7 +30,7 @@ export function rowToAdmission(row: any): Admission {
     timelines,
     prediction: {
       predicted_prob: parseFloat(prediction.predicted_prob ?? "0"),
-      threshold: parseFloat(prediction.threshold ?? "0.48"),
+      threshold: parseFloat(prediction.threshold ?? "0.6494"),
       confidence_evolution: Array.isArray(prediction.confidence_evolution)
         ? prediction.confidence_evolution
         : [parseFloat(prediction.predicted_prob ?? "0")],

@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
 
     const prediction = {
       predicted_prob: Math.round(prob * 10000) / 10000,
-      threshold: 0.48,
+      threshold: 0.6494,
       confidence_evolution: [Math.round(prob * 10000) / 10000],
       dominant_modality: "Balanced",
       attn_temp_entropy: 0.5,
@@ -185,7 +185,7 @@ function computeHeuristicProb(r: Record<string, unknown>) {
 
 function riskLevel(prob: number): string {
   if (prob >= 0.75) return "Critical";
-  if (prob >= 0.48) return "High";
+  if (prob >= 0.6494) return "High";
   if (prob >= 0.25) return "Moderate";
   return "Low";
 }

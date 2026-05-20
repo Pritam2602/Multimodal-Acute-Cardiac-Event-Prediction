@@ -9,7 +9,7 @@ interface ExplainabilityPanelProps {
 export default function ExplainabilityPanel({ admission }: ExplainabilityPanelProps) {
   const dominant = admission.attention.dominant_region;
   const prob = admission.prediction.predicted_prob;
-  const isAMI = prob >= 0.48;
+  const isAMI = prob >= 0.6494;
 
   return (
     <div className="space-y-4">

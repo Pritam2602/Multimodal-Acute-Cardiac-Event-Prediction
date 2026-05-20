@@ -25,7 +25,7 @@ interface PredBadgeProps {
   threshold?: number;
 }
 
-export function PredBadge({ prob, threshold = 0.48 }: PredBadgeProps) {
+export function PredBadge({ prob, threshold = 0.6494 }: PredBadgeProps) {
   const isAMI = prob >= threshold;
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest ${

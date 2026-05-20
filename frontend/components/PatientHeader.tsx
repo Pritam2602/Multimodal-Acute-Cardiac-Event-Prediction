@@ -97,7 +97,7 @@ export default function PatientHeader({ admission, activeTimestep, onTimestepCha
             {admission.prediction.confidence_evolution.map((c, i) => (
               <span key={i} className="flex items-center gap-0.5">
                 {i > 0 && <span className="text-text-muted text-[10px]">→</span>}
-                <span className={`text-[11px] font-mono font-bold ${c >= 0.48 ? "text-danger" : "text-safe"}`}>
+                <span className={`text-[11px] font-mono font-bold ${c >= 0.6494 ? "text-danger" : "text-safe"}`}>
                   {(c * 100).toFixed(0)}%
                 </span>
               </span>
