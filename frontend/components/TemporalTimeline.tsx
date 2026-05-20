@@ -1,4 +1,6 @@
 "use client";
+import { useState, useEffect, useRef } from "react";
+import { Play, Pause, RotateCcw } from "lucide-react";
 import { Admission } from "@/lib/utils/mockData";
 
 interface TemporalTimelineProps {
@@ -14,10 +16,33 @@ function getProbColor(prob: number): string {
   return "#10b981";
 }
 
+const SPEEDS = [1500, 1000, 500] as const;
+const SPEED_LABELS = ["1×", "2×", "3×"] as const;
+
 export default function TemporalTimeline({ admission, activeTimestep, onTimestepChange }: TemporalTimelineProps) {
   const { timelines, prediction } = admission;
   const maxTime = timelines[timelines.length - 1].time_delta_hrs;
   const timelineWidth = maxTime > 0 ? maxTime : 1;
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [speedIdx, setSpeedIdx] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      return;
+    }
+    intervalRef.current = setInterval(() => {
+      onTimestepChange((activeTimestep + 1) % timelines.length);
+    }, SPEEDS[speedIdx]);
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [isPlaying, activeTimestep, timelines.length, speedIdx, onTimestepChange]);
+
+  const handleReset = () => {
+    setIsPlaying(false);
+    onTimestepChange(0);
+  };
 
   return (
     <div className="card p-4 mx-4 mt-3">
@@ -26,10 +51,40 @@ export default function TemporalTimeline({ admission, activeTimestep, onTimestep
           <p className="text-xs font-semibold text-text-primary uppercase tracking-wider">Temporal Reasoning Timeline</p>
           <p className="text-[10px] text-text-muted">Admission progression · Model confidence evolution</p>
         </div>
-        <div className="flex items-center gap-3 text-[10px] text-text-muted">
-          <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-cyan" />ECG scan</div>
-          <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-danger" />Troponin draw</div>
-          <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-purple" />AI confidence</div>
+        <div className="flex items-center gap-3">
+          {/* Playback controls */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleReset}
+              className="p-1.5 rounded-lg hover:bg-elevated text-text-muted hover:text-text-primary transition-colors"
+              title="Reset to T₀"
+            >
+              <RotateCcw className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setIsPlaying(p => !p)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-all ${
+                isPlaying
+                  ? "bg-cyan/15 border border-cyan/40 text-cyan"
+                  : "bg-elevated border border-border-default text-text-secondary hover:text-text-primary"
+              }`}
+            >
+              {isPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+              {isPlaying ? "Pause" : "Play"}
+            </button>
+            <button
+              onClick={() => setSpeedIdx(i => (i + 1) % SPEEDS.length)}
+              className="px-2 py-1.5 rounded-lg text-[11px] font-mono font-bold bg-elevated border border-border-default text-text-muted hover:text-text-primary transition-colors"
+              title="Change speed"
+            >
+              {SPEED_LABELS[speedIdx]}
+            </button>
+          </div>
+          <div className="flex items-center gap-3 text-[10px] text-text-muted">
+            <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-cyan" />ECG scan</div>
+            <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-danger" />Troponin draw</div>
+            <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-purple" />AI confidence</div>
+          </div>
         </div>
       </div>
 
