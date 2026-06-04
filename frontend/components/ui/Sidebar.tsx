@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Activity, LayoutDashboard, GitCompare, Upload, Cpu, AlertTriangle, LogOut } from "lucide-react";
@@ -10,8 +11,30 @@ const NAV_ITEMS = [
   { href: "/upload", label: "Upload Patient", icon: Upload, desc: "New admission entry" },
 ];
 
+interface LiveStats {
+  model_f1: number;
+  model_auc: number;
+  model_threshold: number;
+}
+
 export default function Sidebar() {
   const pathname = usePathname();
+  const [stats, setStats] = useState<LiveStats>({
+    model_f1: COHORT_STATS.model_f1,
+    model_auc: COHORT_STATS.model_auc,
+    model_threshold: COHORT_STATS.model_threshold,
+  });
+
+  useEffect(() => {
+    fetch("/api/stats")
+      .then(r => r.json())
+      .then(data => setStats({
+        model_f1: data.model_f1,
+        model_auc: data.model_auc,
+        model_threshold: data.model_threshold,
+      }))
+      .catch(() => {/* keep defaults */});
+  }, []);
 
   return (
     <aside
@@ -56,15 +79,15 @@ export default function Sidebar() {
         <div className="space-y-1.5">
           <div className="flex justify-between">
             <span className="text-[11px]" style={{ color: "var(--sidebar-muted)" }}>F1 Score</span>
-            <span className="text-[11px] font-mono text-white">{COHORT_STATS.model_f1.toFixed(4)}</span>
+            <span className="text-[11px] font-mono text-white">{stats.model_f1.toFixed(4)}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-[11px]" style={{ color: "var(--sidebar-muted)" }}>AUC-ROC</span>
-            <span className="text-[11px] font-mono text-white">{COHORT_STATS.model_auc.toFixed(4)}</span>
+            <span className="text-[11px] font-mono text-white">{stats.model_auc.toFixed(4)}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-[11px]" style={{ color: "var(--sidebar-muted)" }}>Threshold</span>
-            <span className="text-[11px] font-mono text-amber">{COHORT_STATS.model_threshold}</span>
+            <span className="text-[11px] font-mono text-amber">{stats.model_threshold.toFixed(4)}</span>
           </div>
         </div>
       </div>

@@ -16,6 +16,7 @@ export default function AdmissionsTable() {
     setSearchQuery, setRiskFilter, setPredictionFilter,
     setSelectedAdmission, getFilteredAdmissions,
     fetchAdmissions, isLoadingAdmissions, admissionsError, usingLiveData,
+    totalAdmissions,
   } = useAdmissionStore();
   const [sortKey, setSortKey] = useState<SortKey>("predicted_prob");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -126,7 +127,7 @@ export default function AdmissionsTable() {
         </div>
 
         <div className="text-[11px] text-text-muted ml-auto font-mono">
-          {sorted.length} of {admissions.length} admissions
+          {sorted.length} of {totalAdmissions.toLocaleString()} admissions
         </div>
       </div>
 

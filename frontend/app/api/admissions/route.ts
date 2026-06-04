@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
     const rows = await query(
-      `SELECT * FROM admissions ${where} ORDER BY created_at DESC LIMIT $${p} OFFSET $${p + 1}`,
+      `SELECT * FROM admissions ${where} ORDER BY hadm_id DESC LIMIT $${p} OFFSET $${p + 1}`,
       [...params, limit, offset]
     );
 

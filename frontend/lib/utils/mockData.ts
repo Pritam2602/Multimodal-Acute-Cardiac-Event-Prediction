@@ -405,10 +405,10 @@ export const MOCK_ADMISSIONS: Admission[] = [
 
 export const COHORT_STATS = {
   total_admissions: 40255,
-  ami_prevalence: 0.3127,
-  model_threshold: 0.48,
+  ami_prevalence: 0.1153,
+  model_threshold: 0.6494,
   model_f1: 0.7753,
-  model_auc: 0.8912,
+  model_auc: 0.9411,
   temporal_distribution: { one_timestep: 0.18, two_timestep: 0.41, three_timestep: 0.41 },
 };
 

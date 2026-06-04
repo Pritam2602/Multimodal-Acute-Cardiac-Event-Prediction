@@ -84,6 +84,7 @@ function CaseColumn({ admission, label }: CaseColumnProps) {
           admission={admission}
           activeTimestep={ts}
           attentionWeights={admission.attention.leads}
+          onTimestepChange={setTs}
         />
       </div>
 

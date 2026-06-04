@@ -20,6 +20,7 @@ interface ECGViewerProps {
   admission: Admission;
   activeTimestep: number;
   attentionWeights?: Record<string, number>;
+  onTimestepChange?: (t: number) => void;
 }
 
 function getLeadColor(lead: string, attentionWeights?: Record<string, number>): string {
@@ -137,7 +138,7 @@ function drawECGChannel(
   }
 }
 
-export default function ECGViewer({ admission, activeTimestep, attentionWeights }: ECGViewerProps) {
+export default function ECGViewer({ admission, activeTimestep, attentionWeights, onTimestepChange }: ECGViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1);
@@ -146,10 +147,15 @@ export default function ECGViewer({ admission, activeTimestep, attentionWeights 
   const [isolatedLead, setIsolatedLead] = useState<string | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const offsetRef = useRef(0);
+  const playingTimestepRef = useRef(activeTimestep);
+
+  const maxTimestep = Math.max(0, (admission.timesteps?.length ?? 1) - 1);
 
   const { pattern, hr } = getPatternForAdmission(admission.hadm_id, activeTimestep);
   const [signals, setSignals] = useState<Record<string, number[]>>({});
 
+  // Regenerate signals when timestep or admission changes
+  // But DON'T stop playback if we're in continuous play mode
   useEffect(() => {
     const raw = generateAll12Leads(hr, pattern as ECGPattern, activeTimestep);
     const down: Record<string, number[]> = {};
@@ -157,10 +163,13 @@ export default function ECGViewer({ admission, activeTimestep, attentionWeights 
       down[lead] = downsample(raw[lead], DISPLAY_SAMPLES);
     }
     setSignals(down);
-    setOffset(0);
-    setIsPlaying(false);
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-  }, [activeTimestep, admission.hadm_id, pattern, hr]);
+    // Only reset offset if NOT playing (manual timestep switch)
+    if (!isPlaying) {
+      setOffset(0);
+      offsetRef.current = 0;
+    }
+    playingTimestepRef.current = activeTimestep;
+  }, [activeTimestep, admission.hadm_id, pattern, hr]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -232,23 +241,75 @@ export default function ECGViewer({ admission, activeTimestep, attentionWeights 
 
   useEffect(() => { draw(); }, [draw]);
 
-  // Playback animation
+  // Playback animation — continuous across timesteps
   useEffect(() => {
     if (!isPlaying) {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       return;
     }
-    const speed = 0.0003;
+    // Calculate max useful offset based on zoom:
+    // visibleSamples = DISPLAY_SAMPLES / zoom
+    // maxStartIdx = DISPLAY_SAMPLES - visibleSamples = DISPLAY_SAMPLES * (1 - 1/zoom)
+    // maxOffset = maxStartIdx / DISPLAY_SAMPLES = 1 - 1/zoom
+    // At zoom=1 → 0, zoom=1.5 → 0.333, zoom=2 → 0.5, zoom=4 → 0.75
+    const maxOffset = Math.max(0.01, 1 - 1 / zoom);
+    // Target ~5 seconds per timestep at 60fps → 300 frames
+    const speed = maxOffset / 300;
+
     const animate = () => {
-      offsetRef.current = (offsetRef.current + speed) % 1;
+      offsetRef.current += speed;
+
+      if (offsetRef.current >= maxOffset) {
+        // Reached the end of this timestep's visible scroll
+        const currentTs = playingTimestepRef.current;
+        if (currentTs < maxTimestep && onTimestepChange) {
+          // Advance to next timestep — reset offset to start
+          offsetRef.current = 0;
+          const nextTs = currentTs + 1;
+          playingTimestepRef.current = nextTs;
+          onTimestepChange(nextTs);
+        } else {
+          // Last timestep finished — stop playback
+          offsetRef.current = maxOffset;
+          setOffset(maxOffset);
+          setIsPlaying(false);
+          return;
+        }
+      }
+
       setOffset(offsetRef.current);
       animFrameRef.current = requestAnimationFrame(animate);
     };
     animFrameRef.current = requestAnimationFrame(animate);
     return () => { if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); };
-  }, [isPlaying]);
+  }, [isPlaying, maxTimestep, onTimestepChange, zoom]);
 
-  const reset = () => { setZoom(1); setOffset(0); offsetRef.current = 0; setIsPlaying(false); };
+  const handlePlay = () => {
+    if (!isPlaying) {
+      // Auto-zoom if at 1x so scrolling is visible
+      if (zoom === 1) setZoom(1.5);
+      // If we're at the last timestep and at the end, reset to T0
+      if (activeTimestep >= maxTimestep && offsetRef.current >= 0.95) {
+        offsetRef.current = 0;
+        setOffset(0);
+        playingTimestepRef.current = 0;
+        if (onTimestepChange) onTimestepChange(0);
+      }
+    }
+    setIsPlaying(p => !p);
+  };
+
+  const reset = () => {
+    setZoom(1);
+    setOffset(0);
+    offsetRef.current = 0;
+    setIsPlaying(false);
+    playingTimestepRef.current = 0;
+    if (onTimestepChange) onTimestepChange(0);
+  };
+
+  // Progress label
+  const progressLabel = `T${activeTimestep}/${maxTimestep}`;
 
   return (
     <div className="flex flex-col h-full">
@@ -267,13 +328,13 @@ export default function ECGViewer({ admission, activeTimestep, attentionWeights 
         <div className="w-px h-4 bg-border-default" />
 
         <button
-          onClick={() => setIsPlaying(p => !p)}
+          onClick={handlePlay}
           className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
             isPlaying ? "bg-cyan/10 text-cyan border border-cyan/30" : "bg-elevated text-text-secondary hover:text-text-primary border border-border-default"
           }`}
         >
           {isPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-          {isPlaying ? "Pause" : "Play"}
+          {isPlaying ? "Pause" : "Play All"}
         </button>
 
         <button onClick={reset} className="p-1.5 rounded hover:bg-elevated text-text-muted hover:text-text-primary transition-colors">
@@ -289,6 +350,26 @@ export default function ECGViewer({ admission, activeTimestep, attentionWeights 
             className="flex-1 accent-cyan h-1"
             disabled={isPlaying}
           />
+        </div>
+
+        <div className="w-px h-4 bg-border-default" />
+
+        {/* Timestep progress dots */}
+        <div className="flex items-center gap-1 px-1">
+          {Array.from({ length: maxTimestep + 1 }).map((_, i) => (
+            <div
+              key={i}
+              className={`w-2 h-2 rounded-full transition-all ${
+                i === activeTimestep
+                  ? "bg-cyan scale-125 ring-2 ring-cyan/30"
+                  : i < activeTimestep
+                  ? "bg-cyan/50"
+                  : "bg-border-default"
+              }`}
+              title={`T${i}`}
+            />
+          ))}
+          <span className="text-[9px] font-mono text-text-muted ml-1">{progressLabel}</span>
         </div>
 
         <div className="w-px h-4 bg-border-default" />

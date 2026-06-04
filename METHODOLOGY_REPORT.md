@@ -857,8 +857,9 @@ Running Early Fusion on the curated dataset yielded an immediate parallel breakt
 - **Precision:** `0.810` / **Recall:** `0.743`
 
 #### The Final Scientific Verdict
-Because both Early Fusion (`0.7753` F1) and Late Fusion (`0.7725` F1) broke the 0.76 barrier on the curated dataset—whereas both were hard-capped at ~0.70 on the noisy dataset—we can definitively conclude that **the 0.70 ceiling was an artifact of clinical information entropy, not architectural capacity.**
+Because both Early Fusion (`0.7753` F1) and Late Fusion (`0.7725` F1) broke the 0.76 barrier on the curated datasetwhereas both were hard-capped at ~0.70 on the noisy datasetwe can definitively conclude that **the 0.70 ceiling was an artifact of clinical information entropy, not architectural capacity.**
 
 When the dataset contained contradictory overlapping pathologies (e.g., severe sepsis with troponin leak but no ischemia) or meaningless temporal sampling (ECGs taken 5 minutes apart due to lead errors), the model was forced to optimize a compromised decision boundary. By curating out the noise, the boundary separated beautifully.
 
 Interestingly, Early Fusion slightly edged out Late Fusion (`0.7753` vs `0.7725`). This implies that when the data is structurally clean, the joint representation space of Early Fusion allows for optimal cross-modal synergies without the risk of gradient pollution. Late Fusion acts as a protective mechanism against noisy gradients, but Early Fusion is highly efficient on pristine data.
+

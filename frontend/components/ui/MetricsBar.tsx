@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useState } from "react";
 import { Users, Heart, Activity, TrendingUp } from "lucide-react";
 import { COHORT_STATS } from "@/lib/utils/mockData";
 
@@ -34,7 +35,32 @@ function MetricCard({ label, value, sub, icon, color }: MetricCardProps) {
   );
 }
 
+interface LiveStats {
+  total_admissions: number;
+  ami_prevalence: number;
+  model_threshold: number;
+  model_f1: number;
+  model_auc: number;
+  source: string;
+}
+
 export default function MetricsBar() {
+  const [stats, setStats] = useState<LiveStats>({
+    total_admissions: COHORT_STATS.total_admissions,
+    ami_prevalence: COHORT_STATS.ami_prevalence,
+    model_threshold: COHORT_STATS.model_threshold,
+    model_f1: COHORT_STATS.model_f1,
+    model_auc: COHORT_STATS.model_auc,
+    source: "loading",
+  });
+
+  useEffect(() => {
+    fetch("/api/stats")
+      .then(r => r.json())
+      .then(data => setStats(data))
+      .catch(() => {/* keep defaults */});
+  }, []);
+
   return (
     <header className="px-6 py-3 border-b border-border-default bg-surface flex items-center gap-3 flex-wrap">
       <div className="flex items-center gap-2.5 mr-4">
@@ -48,28 +74,28 @@ export default function MetricsBar() {
       <div className="flex items-center gap-2.5 flex-wrap ml-auto">
         <MetricCard
           label="Total Cohort"
-          value={COHORT_STATS.total_admissions.toLocaleString()}
+          value={stats.total_admissions.toLocaleString()}
           sub="admissions"
           icon={<Users className="w-4.5 h-4.5" />}
           color="green"
         />
         <MetricCard
           label="AMI Prevalence"
-          value={`${(COHORT_STATS.ami_prevalence * 100).toFixed(1)}%`}
-          sub="31.27% of cohort"
+          value={`${(stats.ami_prevalence * 100).toFixed(1)}%`}
+          sub={`${(stats.ami_prevalence * 100).toFixed(2)}% of cohort`}
           icon={<Heart className="w-4.5 h-4.5" />}
           color="danger"
         />
         <MetricCard
           label="Threshold"
-          value={`${COHORT_STATS.model_threshold}`}
+          value={`${stats.model_threshold.toFixed(4)}`}
           sub="Youden's J optimized"
           icon={<Activity className="w-4.5 h-4.5" />}
           color="amber"
         />
         <MetricCard
           label="Early Fusion F1"
-          value={COHORT_STATS.model_f1.toFixed(4)}
+          value={stats.model_f1.toFixed(4)}
           sub="Best model in cohort"
           icon={<TrendingUp className="w-4.5 h-4.5" />}
           color="purple"

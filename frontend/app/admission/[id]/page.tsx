@@ -121,6 +121,7 @@ export default function AdmissionPage() {
                   admission={admission}
                   activeTimestep={activeTimestep}
                   attentionWeights={admission.attention.leads}
+                  onTimestepChange={setActiveTimestep}
                 />
               )}
               {activeTab === "clinical" && (
