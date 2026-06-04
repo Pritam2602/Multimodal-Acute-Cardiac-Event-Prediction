@@ -28,8 +28,14 @@ frontend/tsconfig.tsbuildinfo
 venv/
 __pycache__/
 !requirements.txt
-# Ignore entire ECG cache folder
+# Ignore entire ECG cache and waveform folders
 mimic_data/ecg_cache/
+mimic_data/ecg_waveforms/
+
+# Ignore raw MIMIC CSVs (data is in Postgres now)
+mimic_data/chartevents.csv.gz
+mimic_data/labevents.csv.gz
+mimic_data/machine_measurements.csv
 
 # Ignore all ECG waveform files
 *.dat
@@ -43,3 +49,6 @@ mimic_data/ecg_cache/
 
 # Temp scratch scripts
 _*.py
+db/cleanup.py
+db/scan_sizes.py
+db/check_db.py
