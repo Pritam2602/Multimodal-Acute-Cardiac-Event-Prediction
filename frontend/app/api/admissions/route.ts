@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { rowToAdmission } from "@/lib/utils/dbMapper";
+import { Admission, AttentionWeights, MOCK_ADMISSIONS, PredictionData, RiskLevel } from "@/lib/utils/mockData";
 
 // GET /api/admissions?search=&risk=&prediction=&limit=100&offset=0
 export async function GET(req: NextRequest) {
@@ -44,18 +45,28 @@ export async function GET(req: NextRequest) {
       params
     );
 
+    const admissions = rows.map(rowToAdmission);
+
     return NextResponse.json({
-      admissions: rows.map(rowToAdmission),
-      total: parseInt(countRows[0]?.total ?? "0", 10),
+      admissions,
+      total: parseInt(countRows[0]?.total ?? String(admissions.length), 10),
     });
   } catch (err) {
     console.error("[GET /api/admissions]", err);
-    return NextResponse.json({ error: "Database error", detail: String(err) }, { status: 500 });
+    const admissions = filterMockAdmissions(MOCK_ADMISSIONS, { search, risk, prediction });
+
+    return NextResponse.json({
+      admissions: admissions.slice(offset, offset + limit),
+      total: admissions.length,
+      source: "mock",
+    });
   }
 }
 
 // POST /api/admissions — doctor uploads a new patient
 export async function POST(req: NextRequest) {
+  let fallbackAdmission: Admission | null = null;
+
   try {
     const body = await req.json();
 
@@ -99,7 +110,7 @@ export async function POST(req: NextRequest) {
       has_diabetes && "Diabetes",
     ].filter(Boolean) as string[];
 
-    const prediction = {
+    const prediction: PredictionData = {
       predicted_prob: Math.round(prob * 10000) / 10000,
       threshold: 0.48,
       confidence_evolution: [Math.round(prob * 10000) / 10000],
@@ -110,10 +121,29 @@ export async function POST(req: NextRequest) {
       trop_contribution: 0.5,
     };
 
-    const attention = { leads: attnLeads, temporal: [1.0], dominant_region: region };
+    const attention: AttentionWeights = { leads: attnLeads, temporal: [1.0], dominant_region: region };
 
     const explanation = `Patient age ${anchor_age ?? "unknown"}, troponin ${troponin_t ?? 0} ng/mL. `
       + `AI confidence: ${(prob * 100).toFixed(1)}% AMI probability. Risk: ${rl}.`;
+
+    fallbackAdmission = {
+      hadm_id: `HADM-${newHadmId}`,
+      subject_id: subject_id ?? `P${String(newHadmId).slice(-5)}`,
+      age: anchor_age ?? 0,
+      gender: gender === "F" ? "F" : "M",
+      admittime: new Date().toISOString(),
+      ground_truth_ami: Boolean(ground_truth_ami),
+      max_troponin: troponin_t ?? 0,
+      ecg_count: 1,
+      timesteps: ["T0"],
+      risk_level: rl,
+      comorbidities,
+      timelines: timeline,
+      prediction,
+      attention,
+      explanation,
+      explanation_temporal: explanation,
+    };
 
     await query(
       `INSERT INTO admissions (
@@ -161,11 +191,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ admission: rowToAdmission(newRow) }, { status: 201 });
   } catch (err) {
     console.error("[POST /api/admissions]", err);
+    if (fallbackAdmission) {
+      return NextResponse.json({ admission: fallbackAdmission, source: "mock" }, { status: 201 });
+    }
+
     return NextResponse.json({ error: "Database error", detail: String(err) }, { status: 500 });
   }
 }
 
 // ── Helpers (mirror split_dataset.py logic) ───────────────────────────────────
+function filterMockAdmissions(
+  admissions: Admission[],
+  filters: { search: string; risk: string; prediction: string }
+) {
+  const search = filters.search.toLowerCase();
+
+  return admissions.filter((admission) => {
+    const matchesSearch = !search
+      || admission.subject_id.toLowerCase().includes(search)
+      || admission.hadm_id.toLowerCase().includes(search);
+    const matchesRisk = !filters.risk || admission.risk_level === filters.risk;
+    const isAmi = admission.prediction.predicted_prob >= admission.prediction.threshold;
+    const matchesPrediction = !filters.prediction
+      || (filters.prediction === "AMI" && isAmi)
+      || (filters.prediction === "Non-AMI" && !isAmi);
+
+    return matchesSearch && matchesRisk && matchesPrediction;
+  });
+}
+
 function sigmoid(x: number) {
   return 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, x))));
 }
@@ -183,14 +237,14 @@ function computeHeuristicProb(r: Record<string, unknown>) {
   return sigmoid(z);
 }
 
-function riskLevel(prob: number): string {
+function riskLevel(prob: number): RiskLevel {
   if (prob >= 0.75) return "Critical";
   if (prob >= 0.48) return "High";
   if (prob >= 0.25) return "Moderate";
   return "Low";
 }
 
-function dominantRegion(qrsAxis: number, tAxis: number): string {
+function dominantRegion(qrsAxis: number, tAxis: number): AttentionWeights["dominant_region"] {
   if (qrsAxis >= -30 && qrsAxis <= 90 && tAxis < 0) return "Inferior";
   if (qrsAxis < -30 || qrsAxis > 90) return "Anterior/Septal";
   if (tAxis > 90) return "Lateral";

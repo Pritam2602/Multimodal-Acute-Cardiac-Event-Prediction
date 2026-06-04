@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db";
 import { rowToAdmission } from "@/lib/utils/dbMapper";
+import { MOCK_ADMISSIONS } from "@/lib/utils/mockData";
 
 export async function GET(
   _req: NextRequest,
@@ -18,6 +19,11 @@ export async function GET(
     return NextResponse.json({ admission: rowToAdmission(rows[0]) });
   } catch (err) {
     console.error("[GET /api/admissions/[id]]", err);
-    return NextResponse.json({ error: "Database error", detail: String(err) }, { status: 500 });
+    const admission = MOCK_ADMISSIONS.find((item) => item.hadm_id.replace(/^HADM-/i, "") === hadmId);
+    if (!admission) {
+      return NextResponse.json({ error: "Admission not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ admission, source: "mock" });
   }
 }

@@ -1,7 +1,7 @@
 "use client";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
-  ResponsiveContainer, Area, AreaChart, Dot,
+  XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
+  ResponsiveContainer, Area, AreaChart,
 } from "recharts";
 import { ClinicalTimestep } from "@/lib/utils/mockData";
 
@@ -12,9 +12,18 @@ interface TroponinChartProps {
 
 const NORMAL_UPPER = 0.014; // 99th percentile hs-cTnT
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function CustomDot(props: any) {
-  const { cx, cy, payload, activeTimestep } = props;
+type TroponinPoint = ClinicalTimestep;
+
+interface CustomDotProps {
+  cx?: number;
+  cy?: number;
+  payload?: TroponinPoint;
+  activeTimestep: number;
+}
+
+function CustomDot({ cx, cy, payload, activeTimestep }: CustomDotProps) {
+  if (cx == null || cy == null || !payload) return null;
+
   const isActive = payload.timestep === activeTimestep;
   const isHigh = payload.trop_value > NORMAL_UPPER;
 
@@ -33,8 +42,11 @@ function CustomDot(props: any) {
   );
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function CustomTooltip({ active, payload }: any) {
+interface TooltipPayload {
+  payload: TroponinPoint;
+}
+
+function CustomTooltip({ active, payload }: { active?: boolean; payload?: TooltipPayload[] }) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload;
   return (
@@ -48,31 +60,6 @@ function CustomTooltip({ active, payload }: any) {
       </p>
       <p className="text-text-secondary">+{d.time_delta_hrs.toFixed(1)}h from admission</p>
     </div>
-  );
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function ConfidenceLine({ timelines, confidenceEvolution }: { timelines: ClinicalTimestep[], confidenceEvolution?: number[] }) {
-  const data = timelines.map((t, i) => ({
-    label: t.label,
-    confidence: confidenceEvolution?.[i] != null ? confidenceEvolution[i] * 100 : null,
-  }));
-
-  return (
-    <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={data} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-        <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#6b9580", fontFamily: "JetBrains Mono" }} />
-        <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#6b9580", fontFamily: "JetBrains Mono" }}
-          tickFormatter={(v) => `${v}%`} />
-        <ReferenceLine y={48} stroke="#f59e0b" strokeDasharray="4 2" strokeWidth={1} label={{ value: "Threshold", position: "insideTopRight", fontSize: 9, fill: "#d97706" }} />
-        <Line
-          type="monotone" dataKey="confidence" stroke="#7c3aed" strokeWidth={2}
-          dot={{ r: 4, fill: "#7c3aed", stroke: "#f1f5f9", strokeWidth: 1 }}
-          strokeDasharray={undefined}
-        />
-      </LineChart>
-    </ResponsiveContainer>
   );
 }
 

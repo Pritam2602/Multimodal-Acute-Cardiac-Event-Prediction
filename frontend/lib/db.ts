@@ -2,7 +2,6 @@ import { Pool } from "pg";
 
 // Singleton pool — reused across hot-reloads in Next.js dev mode
 declare global {
-  // eslint-disable-next-line no-var
   var _pgPool: Pool | undefined;
 }
 
