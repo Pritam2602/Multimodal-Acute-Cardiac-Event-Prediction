@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import AuthGuard from "@/components/ui/AuthGuard";
 
 export const metadata: Metadata = {
   title: "AMI Prediction Platform — Temporal Multimodal Cardiac AI",
@@ -15,7 +16,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="min-h-screen bg-base text-text-primary antialiased">
-        {children}
+        <AuthGuard>{children}</AuthGuard>
       </body>
     </html>
   );

@@ -1,14 +1,16 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Activity, LayoutDashboard, GitCompare, Upload, Cpu, AlertTriangle, LogOut } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { Activity, LayoutDashboard, GitCompare, Upload, Cpu, AlertTriangle, LogOut, Brain } from "lucide-react";
 import { COHORT_STATS } from "@/lib/utils/mockData";
+import { useAuth } from "@/lib/auth/useAuth";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Admissions", icon: LayoutDashboard, desc: "Patient cohort table" },
   { href: "/compare", label: "Case Compare", icon: GitCompare, desc: "Side-by-side analysis" },
   { href: "/upload", label: "Upload Patient", icon: Upload, desc: "New admission entry" },
+  { href: "/ecg-intelligence", label: "ECG Intelligence", icon: Brain, desc: "AI wave analysis guide" },
 ];
 
 interface LiveStats {
@@ -19,6 +21,9 @@ interface LiveStats {
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const { doctor, logout } = useAuth();
+
   const [stats, setStats] = useState<LiveStats>({
     model_f1: COHORT_STATS.model_f1,
     model_auc: COHORT_STATS.model_auc,
@@ -35,6 +40,16 @@ export default function Sidebar() {
       }))
       .catch(() => {/* keep defaults */});
   }, []);
+
+  const handleLogout = () => {
+    logout();
+    router.replace("/login");
+  };
+
+  // Derive display info from the logged-in doctor
+  const doctorName = doctor?.name ?? "Dr. Researcher";
+  const doctorInitials = doctor?.initials ?? "DR";
+  const doctorSpecialty = doctor?.specialty ?? "Cardiology AI";
 
   return (
     <aside
@@ -169,29 +184,31 @@ export default function Sidebar() {
         </div>
       </nav>
 
-      {/* Footer */}
+      {/* Footer — live doctor profile */}
       <div className="p-4" style={{ borderTop: "1px solid var(--sidebar-border)" }}>
         <div className="flex items-center gap-2.5 mb-3">
           <div
             className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
-            style={{ background: "rgba(255,255,255,0.15)" }}
+            style={{ background: "rgba(34,197,94,0.2)", border: "1px solid rgba(34,197,94,0.3)" }}
           >
-            <span className="text-[11px] font-bold text-white">DR</span>
+            <span className="text-[11px] font-bold text-green-300">{doctorInitials}</span>
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-semibold text-white leading-tight truncate">Dr. Researcher</p>
-            <p className="text-[10px] leading-tight" style={{ color: "var(--sidebar-muted)" }}>Cardiology AI</p>
+            <p className="text-xs font-semibold text-white leading-tight truncate">{doctorName}</p>
+            <p className="text-[10px] leading-tight truncate" style={{ color: "var(--sidebar-muted)" }}>{doctorSpecialty}</p>
           </div>
         </div>
 
         <button
+          id="sidebar-logout-btn"
+          onClick={handleLogout}
           className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-[11px] font-semibold transition-all"
           style={{ background: "rgba(255,255,255,0.08)", color: "var(--sidebar-text)", border: "1px solid var(--sidebar-border)" }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.14)"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.08)"; }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(220,38,38,0.15)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(220,38,38,0.3)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.08)"; (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--sidebar-border)"; }}
         >
           <LogOut className="w-3.5 h-3.5" />
-          Logout
+          Sign Out
         </button>
 
         <p className="text-[9px] mt-3 text-center" style={{ color: "var(--sidebar-muted)" }}>
@@ -201,3 +218,5 @@ export default function Sidebar() {
     </aside>
   );
 }
+
+
