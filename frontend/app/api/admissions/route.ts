@@ -72,27 +72,28 @@ export async function POST(req: NextRequest) {
 
     const {
       hadm_id, subject_id, anchor_age, gender,
-      heart_rate, respiratory_rate, troponin_t, creatinine, sodium, potassium,
-      num_diagnoses, los, pr_interval, qrs_duration, qt_interval, qtc,
-      p_axis, qrs_axis, t_axis, rr_interval,
+      heart_rate, creatinine, troponin_t,
+      qrs_axis, t_axis, qrs_duration, qtc,
       has_ckd = false, has_hf = false, has_sepsis = false,
       has_pe = false, has_afib = false, has_diabetes = false,
       ground_truth_ami = false,
       notes = "",
     } = body;
 
-    // Generate a unique hadm_id if not provided (live uploads)
-    const newHadmId = hadm_id ?? Date.now();
+    // Generate a unique hadm_id if not provided
+    const newHadmId = hadm_id ? String(hadm_id) : `HADM-${Date.now()}`;
+    const newSubjectId = subject_id ? String(subject_id) : `P-${String(Date.now()).slice(-5)}`;
 
-    // Build heuristic prediction from inputs
+    // Build heuristic prediction from submitted values
     const prob = computeHeuristicProb({
-      troponin_t, pr_interval, qrs_duration, qtc, anchor_age,
+      troponin_t, qrs_duration, qtc, anchor_age,
       has_ckd, has_sepsis,
     });
     const rl = riskLevel(prob);
     const region = dominantRegion(qrs_axis ?? 0, t_axis ?? 0);
     const attnLeads = buildAttentionLeads(region);
 
+    // Build the timeline JSONB — all vitals/ECG fields live here
     const timeline = [{
       timestep: 0, label: "T0", time_delta_hrs: 0,
       trop_value: troponin_t ?? 0,
@@ -105,14 +106,17 @@ export async function POST(req: NextRequest) {
     }];
 
     const comorbidities: string[] = [
-      has_ckd && "CKD", has_hf && "Heart Failure", has_sepsis && "Sepsis",
-      has_pe && "Pulmonary Embolism", has_afib && "Atrial Fibrillation",
+      has_ckd && "CKD",
+      has_hf && "Heart Failure",
+      has_sepsis && "Sepsis",
+      has_pe && "Pulmonary Embolism",
+      has_afib && "Atrial Fibrillation",
       has_diabetes && "Diabetes",
     ].filter(Boolean) as string[];
 
     const prediction: PredictionData = {
       predicted_prob: Math.round(prob * 10000) / 10000,
-      threshold: 0.48,
+      threshold: 0.45, // Phase 10 curated model threshold
       confidence_evolution: [Math.round(prob * 10000) / 10000],
       dominant_modality: "Balanced",
       attn_temp_entropy: 0.5,
@@ -121,14 +125,20 @@ export async function POST(req: NextRequest) {
       trop_contribution: 0.5,
     };
 
-    const attention: AttentionWeights = { leads: attnLeads, temporal: [1.0], dominant_region: region };
+    const attention: AttentionWeights = {
+      leads: attnLeads,
+      temporal: [1.0],
+      dominant_region: region,
+    };
 
-    const explanation = `Patient age ${anchor_age ?? "unknown"}, troponin ${troponin_t ?? 0} ng/mL. `
-      + `AI confidence: ${(prob * 100).toFixed(1)}% AMI probability. Risk: ${rl}.`;
+    const explanation =
+      `Patient age ${anchor_age ?? "unknown"}, troponin ${troponin_t ?? 0} ng/mL. ` +
+      `AI confidence: ${(prob * 100).toFixed(1)}% AMI probability. Risk level: ${rl}.`;
 
+    // Build the fallback object (returned if DB write fails)
     fallbackAdmission = {
-      hadm_id: `HADM-${newHadmId}`,
-      subject_id: subject_id ?? `P${String(newHadmId).slice(-5)}`,
+      hadm_id: newHadmId,
+      subject_id: newSubjectId,
       age: anchor_age ?? 0,
       gender: gender === "F" ? "F" : "M",
       admittime: new Date().toISOString(),
@@ -145,56 +155,66 @@ export async function POST(req: NextRequest) {
       explanation_temporal: explanation,
     };
 
+    // ── 1. Upsert patient (required by FK constraint) ────────────────────────
+    await query(
+      `INSERT INTO patients (subject_id, age, gender)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (subject_id) DO UPDATE
+         SET age = EXCLUDED.age, gender = EXCLUDED.gender`,
+      [newSubjectId, anchor_age ?? 0, gender === "F" ? 1 : 0]
+    );
+
+    // ── 2. Insert admission — only columns that exist in the schema ──────────
     await query(
       `INSERT INTO admissions (
         hadm_id, subject_id, anchor_age, gender, admittime,
-        heart_rate, respiratory_rate, troponin_t, creatinine, sodium, potassium,
-        num_diagnoses, los, pr_interval, qrs_duration, qt_interval, qtc,
-        p_axis, qrs_axis, t_axis, rr_interval,
-        troponin_peak, max_troponin,
-        has_ckd, has_hf, has_sepsis, has_pe, has_afib, has_diabetes,
+        max_troponin, has_ckd, has_hf, has_sepsis,
         ground_truth_ami, risk_level,
         timelines, prediction, attention, comorbidities,
-        explanation, explanation_temporal, split
+        explanation, explanation_temporal
       ) VALUES (
-        $1,$2,$3,$4,NOW(),
-        $5,$6,$7,$8,$9,$10,
-        $11,$12,$13,$14,$15,$16,
-        $17,$18,$19,$20,
-        $21,$21,
-        $22,$23,$24,$25,$26,$27,
-        $28,$29,
-        $30::jsonb,$31::jsonb,$32::jsonb,$33::jsonb,
-        $34,$35,'live'
+        $1, $2, $3, $4, NOW(),
+        $5, $6, $7, $8,
+        $9, $10,
+        $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb,
+        $15, $16
       )`,
       [
-        newHadmId, subject_id ?? `P${String(newHadmId).slice(-5)}`,
+        newHadmId, newSubjectId,
         anchor_age ?? 0, gender ?? "M",
-        heart_rate ?? 0, respiratory_rate ?? 0, troponin_t ?? 0, creatinine ?? 0, sodium ?? 0, potassium ?? 0,
-        num_diagnoses ?? 0, los ?? 0, pr_interval ?? 0, qrs_duration ?? 0, qt_interval ?? 0, qtc ?? 0,
-        p_axis ?? 0, qrs_axis ?? 0, t_axis ?? 0, rr_interval ?? 0,
         troponin_t ?? 0,
-        Boolean(has_ckd), Boolean(has_hf), Boolean(has_sepsis), Boolean(has_pe), Boolean(has_afib), Boolean(has_diabetes),
-        Boolean(ground_truth_ami), rl,
-        JSON.stringify(timeline), JSON.stringify(prediction), JSON.stringify(attention), JSON.stringify(comorbidities),
-        explanation, explanation,
+        Boolean(has_ckd) ? 1 : 0,
+        Boolean(has_hf) ? 1 : 0,
+        Boolean(has_sepsis) ? 1 : 0,
+        Boolean(ground_truth_ami) ? 1 : 0,
+        rl,
+        JSON.stringify(timeline),
+        JSON.stringify(prediction),
+        JSON.stringify(attention),
+        JSON.stringify(comorbidities),
+        explanation,
+        explanation,
       ]
     );
 
-    // Log the upload
-    await query(
-      `INSERT INTO upload_log (hadm_id, uploaded_by, notes) VALUES ($1, 'doctor', $2)`,
-      [newHadmId, notes]
-    );
+    // ── 3. Try logging the upload (non-fatal if upload_log doesn't exist) ────
+    try {
+      await query(
+        `INSERT INTO upload_log (hadm_id, uploaded_by, notes) VALUES ($1, 'doctor', $2)`,
+        [newHadmId, notes]
+      );
+    } catch { /* upload_log table may not exist — ignore */ }
 
     const [newRow] = await query(`SELECT * FROM admissions WHERE hadm_id = $1`, [newHadmId]);
     return NextResponse.json({ admission: rowToAdmission(newRow) }, { status: 201 });
+
   } catch (err) {
     console.error("[POST /api/admissions]", err);
     if (fallbackAdmission) {
+      // Still return 201 so the UI navigates to the patient — it just won't
+      // be in the DB (user sees it in the session, not after reload)
       return NextResponse.json({ admission: fallbackAdmission, source: "mock" }, { status: 201 });
     }
-
     return NextResponse.json({ error: "Database error", detail: String(err) }, { status: 500 });
   }
 }
@@ -239,7 +259,7 @@ function computeHeuristicProb(r: Record<string, unknown>) {
 
 function riskLevel(prob: number): RiskLevel {
   if (prob >= 0.75) return "Critical";
-  if (prob >= 0.48) return "High";
+  if (prob >= 0.45) return "High"; // Phase 10 threshold
   if (prob >= 0.25) return "Moderate";
   return "Low";
 }
